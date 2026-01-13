@@ -292,7 +292,7 @@ def suggest(
 @app.command()
 def update_data(
     days: int = typer.Option(7, "--days", "-d", help="Fetch circulars from last N days"),
-    exchange: str = typer.Option("NSE", "--exchange", "-e", help="Exchange (NSE or BSE)")
+    exchange: str = typer.Option("BOTH", "--exchange", "-e", help="Exchange (NSE, BSE, or BOTH)")
 ):
     """
     Update circular database and market data cache.
@@ -318,6 +318,307 @@ def update_data(
     console.print(f"  • Circulars found: {result.get('circulars_found', 0)}")
     console.print(f"  • Processed: {result.get('processed', 0)}")
     console.print(f"  • Failed: {result.get('failed', 0)}")
+
+
+@app.command()
+def ingest(
+    exchange: str = typer.Option("BOTH", "--exchange", "-e", help="Exchange (NSE, BSE, or BOTH)"),
+    ticker: Optional[str] = typer.Option(None, "--ticker", "-t", help="Specific ticker to ingest"),
+    days: int = typer.Option(7, "--days", "-d", help="Days to look back"),
+    doc_type: str = typer.Option("all", "--type", help="Document type (circulars, press, all)"),
+    no_download: bool = typer.Option(False, "--no-download", help="Skip downloading files"),
+    no_parse: bool = typer.Option(False, "--no-parse", help="Skip parsing content")
+):
+    """
+    Ingest circulars and press releases from BSE/NSE.
+
+    This command fetches, downloads, and processes regulatory filings
+    and press releases for storage in the RAG system.
+    """
+    from .pipelines.ingestion_orchestrator import IngestionOrchestrator
+    from rich.progress import BarColumn, TaskProgressColumn
+
+    console.print(Panel(
+        f"[bold cyan]Document Ingestion[/bold cyan]\n\n"
+        f"Exchange: {exchange}\n"
+        f"Ticker: {ticker or 'All'}\n"
+        f"Lookback: {days} days\n"
+        f"Type: {doc_type}",
+        title="FinAgent Ingestion"
+    ))
+
+    orchestrator = IngestionOrchestrator()
+
+    def progress_callback(current: int, total: int, message: str):
+        if total > 0:
+            pct = (current / total) * 100
+            console.print(f"  [{current}/{total}] {message}")
+
+    try:
+        if doc_type in ["all", "circulars"]:
+            console.print("\n[bold]Ingesting Circulars...[/bold]")
+            result = orchestrator.ingest_circulars(
+                exchange=exchange,
+                ticker=ticker,
+                days_back=days,
+                download=not no_download,
+                parse=not no_parse,
+                progress_callback=progress_callback
+            )
+
+            console.print(f"\n[green]Circular Ingestion Complete![/green]")
+            console.print(f"  • Documents found: {result.job.documents_found}")
+            console.print(f"  • Processed: {result.job.documents_processed}")
+            console.print(f"  • Failed: {result.job.documents_failed}")
+            console.print(f"  • Chunks generated: {result.chunks_generated}")
+            console.print(f"  • Duration: {result.duration_seconds:.1f}s")
+
+        if doc_type in ["all", "press"]:
+            console.print("\n[bold]Ingesting Press Releases...[/bold]")
+            result = orchestrator.ingest_press_releases(
+                ticker=ticker,
+                days_back=days,
+                fetch_content=not no_parse,
+                progress_callback=progress_callback
+            )
+
+            console.print(f"\n[green]Press Release Ingestion Complete![/green]")
+            console.print(f"  • Documents found: {result.job.documents_found}")
+            console.print(f"  • Processed: {result.job.documents_processed}")
+            console.print(f"  • Failed: {result.job.documents_failed}")
+            console.print(f"  • Chunks generated: {result.chunks_generated}")
+            console.print(f"  • Duration: {result.duration_seconds:.1f}s")
+
+    except Exception as e:
+        console.print(f"[red]Ingestion error: {e}[/red]")
+        raise typer.Exit(1)
+
+
+@app.command()
+def ingest_company(
+    ticker: str = typer.Argument(..., help="Stock ticker (e.g., RELIANCE)"),
+    days: int = typer.Option(365, "--days", "-d", help="Days to look back"),
+    include_results: bool = typer.Option(True, "--results/--no-results", help="Include quarterly results"),
+    include_press: bool = typer.Option(True, "--press/--no-press", help="Include press releases")
+):
+    """
+    Comprehensive ingestion for a specific company.
+
+    Fetches all available filings including:
+    - Quarterly and annual results
+    - Board meeting outcomes
+    - Shareholding patterns
+    - Corporate announcements
+    - Press releases
+    """
+    from .pipelines.ingestion_orchestrator import IngestionOrchestrator
+
+    console.print(Panel(
+        f"[bold cyan]Company Ingestion: {ticker}[/bold cyan]\n\n"
+        f"Lookback: {days} days\n"
+        f"Include Results: {include_results}\n"
+        f"Include Press: {include_press}",
+        title="FinAgent"
+    ))
+
+    orchestrator = IngestionOrchestrator()
+
+    try:
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            console=console
+        ) as progress:
+            task = progress.add_task(f"Ingesting data for {ticker}...", total=None)
+
+            result = orchestrator.ingest_company(
+                ticker=ticker,
+                days_back=days,
+                include_results=include_results,
+                include_press_releases=include_press
+            )
+
+            progress.update(task, description="[green]Complete[/green]")
+
+        console.print(f"\n[green]Company Ingestion Complete![/green]")
+        console.print(f"\n[bold]Documents Found:[/bold]")
+        console.print(f"  • Quarterly Results: {len(result.get('quarterly_results', []))}")
+        console.print(f"  • Board Meetings: {len(result.get('board_meetings', []))}")
+        console.print(f"  • Shareholding: {len(result.get('shareholding', []))}")
+        console.print(f"  • Announcements: {len(result.get('announcements', []))}")
+        console.print(f"  • Press Releases: {len(result.get('press_releases', []))}")
+        console.print(f"\n  Total Documents: {result.get('total_documents', 0)}")
+        console.print(f"  Total Chunks: {result.get('total_chunks', 0)}")
+
+        if result.get('errors'):
+            console.print(f"\n[yellow]Errors ({len(result['errors'])}):[/yellow]")
+            for err in result['errors'][:5]:
+                console.print(f"  • {err}")
+
+    except Exception as e:
+        console.print(f"[red]Error: {e}[/red]")
+        raise typer.Exit(1)
+
+
+@app.command()
+def search_filings(
+    query: Optional[str] = typer.Argument(None, help="Search query"),
+    ticker: Optional[str] = typer.Option(None, "--ticker", "-t", help="Filter by ticker"),
+    doc_type: Optional[str] = typer.Option(None, "--type", help="Filter by document type"),
+    exchange: Optional[str] = typer.Option(None, "--exchange", "-e", help="Filter by exchange"),
+    days: int = typer.Option(30, "--days", "-d", help="Days to look back"),
+    limit: int = typer.Option(20, "--limit", "-n", help="Max results to show")
+):
+    """
+    Search ingested circulars and press releases.
+    """
+    from .pipelines.unstructured_data import CircularPipeline
+    from .pipelines.press_releases import PressReleasePipeline
+
+    circular_pipeline = CircularPipeline()
+    press_pipeline = PressReleasePipeline()
+
+    console.print(Panel(
+        f"[bold cyan]Search Filings[/bold cyan]\n\n"
+        f"Query: {query or 'All'}\n"
+        f"Ticker: {ticker or 'All'}\n"
+        f"Type: {doc_type or 'All'}",
+        title="FinAgent"
+    ))
+
+    # Search circulars
+    circulars = circular_pipeline.search_circulars(
+        query=query,
+        ticker=ticker,
+        doc_type=doc_type,
+        exchange=exchange,
+        days_back=days
+    )
+
+    # Search press releases
+    press_releases = press_pipeline.search_press_releases(
+        query=query,
+        ticker=ticker,
+        days_back=days
+    )
+
+    # Display results
+    if circulars:
+        console.print(f"\n[bold]Circulars ({len(circulars)}):[/bold]")
+        table = Table()
+        table.add_column("Date", style="cyan", width=12)
+        table.add_column("Ticker", style="green", width=12)
+        table.add_column("Type", style="yellow", width=15)
+        table.add_column("Title", width=50)
+
+        for doc in circulars[:limit]:
+            date = doc.get('filing_date', '')[:10] if doc.get('filing_date') else 'N/A'
+            table.add_row(
+                date,
+                doc.get('ticker', 'N/A'),
+                doc.get('doc_type', 'N/A'),
+                (doc.get('title', 'N/A')[:47] + '...') if len(doc.get('title', '')) > 50 else doc.get('title', 'N/A')
+            )
+
+        console.print(table)
+
+    if press_releases:
+        console.print(f"\n[bold]Press Releases ({len(press_releases)}):[/bold]")
+        table = Table()
+        table.add_column("Date", style="cyan", width=12)
+        table.add_column("Ticker", style="green", width=12)
+        table.add_column("Source", style="yellow", width=10)
+        table.add_column("Title", width=50)
+
+        for pr in press_releases[:limit]:
+            date = pr.get('release_date', '')[:10] if pr.get('release_date') else 'N/A'
+            table.add_row(
+                date,
+                pr.get('ticker', 'N/A'),
+                pr.get('source', 'N/A'),
+                (pr.get('title', 'N/A')[:47] + '...') if len(pr.get('title', '')) > 50 else pr.get('title', 'N/A')
+            )
+
+        console.print(table)
+
+    if not circulars and not press_releases:
+        console.print("[yellow]No results found.[/yellow]")
+
+
+@app.command()
+def ingestion_stats():
+    """
+    Show ingestion statistics and status.
+    """
+    from .pipelines.ingestion_orchestrator import IngestionOrchestrator
+
+    orchestrator = IngestionOrchestrator()
+    stats = orchestrator.get_stats()
+
+    console.print(Panel(
+        "[bold cyan]Ingestion Statistics[/bold cyan]",
+        title="FinAgent"
+    ))
+
+    # Jobs
+    console.print("\n[bold]Ingestion Jobs:[/bold]")
+    console.print(f"  • Total jobs: {stats['jobs'].get('total', 0)}")
+    console.print(f"  • Documents processed: {stats['jobs'].get('total_processed', 0)}")
+    console.print(f"  • Documents failed: {stats['jobs'].get('total_failed', 0)}")
+
+    # Circulars
+    console.print("\n[bold]Circulars:[/bold]")
+    console.print(f"  • Total: {stats['circulars'].get('total_documents', 0)}")
+    console.print(f"  • Processed: {stats['circulars'].get('processed', 0)}")
+    console.print(f"  • Pending: {stats['circulars'].get('unprocessed', 0)}")
+    console.print(f"  • Last 7 days: {stats['circulars'].get('last_7_days', 0)}")
+
+    by_exchange = stats['circulars'].get('by_exchange', {})
+    if by_exchange:
+        console.print("  • By Exchange:")
+        for ex, count in by_exchange.items():
+            console.print(f"      {ex}: {count}")
+
+    by_type = stats['circulars'].get('by_type', {})
+    if by_type:
+        console.print("  • By Type:")
+        for t, count in list(by_type.items())[:5]:
+            console.print(f"      {t}: {count}")
+
+    # Press Releases
+    console.print("\n[bold]Press Releases:[/bold]")
+    console.print(f"  • Total: {stats['press_releases'].get('total', 0)}")
+    console.print(f"  • Parsed: {stats['press_releases'].get('parsed', 0)}")
+    console.print(f"  • Pending: {stats['press_releases'].get('unparsed', 0)}")
+
+    by_source = stats['press_releases'].get('by_source', {})
+    if by_source:
+        console.print("  • By Source:")
+        for src, count in by_source.items():
+            console.print(f"      {src}: {count}")
+
+    # Recent jobs
+    recent_jobs = orchestrator.get_recent_jobs(limit=5)
+    if recent_jobs:
+        console.print("\n[bold]Recent Jobs:[/bold]")
+        table = Table()
+        table.add_column("Job ID", style="cyan", width=12)
+        table.add_column("Type", style="green", width=15)
+        table.add_column("Status", width=10)
+        table.add_column("Processed", width=10)
+        table.add_column("Created", width=20)
+
+        for job in recent_jobs:
+            status_color = "green" if job['status'] == 'completed' else "yellow" if job['status'] == 'partial' else "red"
+            table.add_row(
+                job['job_id'],
+                job['job_type'],
+                f"[{status_color}]{job['status']}[/{status_color}]",
+                str(job.get('documents_processed', 0)),
+                job['created_at'][:19] if job.get('created_at') else 'N/A'
+            )
+
+        console.print(table)
 
 
 @app.command()
