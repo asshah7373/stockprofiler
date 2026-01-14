@@ -111,8 +111,8 @@ class CircularPipeline:
         'Investor Presentation': DocumentType.INVESTOR_PRESENTATION,
     }
 
-    # Headers to mimic browser request
-    HEADERS = {
+    # Headers to mimic browser request for NSE
+    NSE_HEADERS = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         'Accept': 'application/json, text/plain, */*',
         'Accept-Language': 'en-US,en;q=0.9',
@@ -120,7 +120,27 @@ class CircularPipeline:
         'Referer': 'https://www.nseindia.com/',
         'Origin': 'https://www.nseindia.com',
         'Connection': 'keep-alive',
+        'Sec-Ch-Ua': '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
+        'Sec-Ch-Ua-Mobile': '?0',
+        'Sec-Ch-Ua-Platform': '"Windows"',
+        'Sec-Fetch-Dest': 'empty',
+        'Sec-Fetch-Mode': 'cors',
+        'Sec-Fetch-Site': 'same-origin',
     }
+
+    # Headers for BSE API
+    BSE_HEADERS = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'application/json, text/plain, */*',
+        'Accept-Language': 'en-US,en;q=0.9',
+        'Accept-Encoding': 'gzip, deflate, br',
+        'Referer': 'https://www.bseindia.com/',
+        'Origin': 'https://www.bseindia.com',
+        'Connection': 'keep-alive',
+    }
+
+    # Alias for backwards compatibility
+    HEADERS = NSE_HEADERS
 
     def __init__(
         self,
@@ -194,16 +214,26 @@ class CircularPipeline:
         """Get or create NSE session with required cookies."""
         if self._nse_session is None:
             self._nse_session = requests.Session()
-            self._nse_session.headers.update(self.HEADERS)
+            self._nse_session.headers.update(self.NSE_HEADERS)
 
             try:
-                # Visit main page to get cookies
+                # Visit main page to get cookies - NSE requires this
                 self._rate_limit_wait()
                 response = self._nse_session.get(
                     self.NSE_BASE_URL,
                     timeout=10
                 )
-                self.logger.debug(f"NSE session initialized, cookies: {len(self._nse_session.cookies)}")
+                self.logger.debug(f"NSE session initialized, status: {response.status_code}, cookies: {len(self._nse_session.cookies)}")
+
+                # Sometimes need to visit an API endpoint to fully initialize
+                if len(self._nse_session.cookies) == 0:
+                    self._rate_limit_wait()
+                    self._nse_session.get(
+                        "https://www.nseindia.com/api/marketStatus",
+                        timeout=10
+                    )
+                    self.logger.debug(f"NSE session retry, cookies: {len(self._nse_session.cookies)}")
+
             except Exception as e:
                 self.logger.warning(f"Error initializing NSE session: {e}")
 
@@ -253,13 +283,24 @@ class CircularPipeline:
 
             response = requests.get(
                 self.BSE_ANNOUNCEMENTS_API,
-                headers=self.HEADERS,
+                headers=self.BSE_HEADERS,
                 params=params,
                 timeout=15
             )
 
             if response.status_code == 200:
-                data = response.json()
+                # Check if response is actually JSON
+                content_type = response.headers.get('Content-Type', '')
+                if 'json' not in content_type.lower():
+                    self.logger.warning(f"BSE returned non-JSON response: {content_type}")
+                    # Try parsing anyway in case content-type header is wrong
+                    try:
+                        data = response.json()
+                    except json.JSONDecodeError:
+                        self.logger.error(f"BSE response not JSON. First 200 chars: {response.text[:200]}")
+                        return documents
+                else:
+                    data = response.json()
 
                 for item in data.get('Table', []):
                     try:
@@ -396,7 +437,25 @@ class CircularPipeline:
             )
 
             if response.status_code == 200:
-                data = response.json()
+                # Check if response is actually JSON
+                content_type = response.headers.get('Content-Type', '')
+                try:
+                    data = response.json()
+                except json.JSONDecodeError:
+                    self.logger.error(f"NSE response not JSON. First 200 chars: {response.text[:200]}")
+                    # Reset session and retry once
+                    self._reset_nse_session()
+                    return documents
+
+                # Handle case where data is a dict with error message
+                if isinstance(data, dict) and 'error' in data:
+                    self.logger.error(f"NSE API error: {data.get('error')}")
+                    return documents
+
+                # Ensure data is a list
+                if not isinstance(data, list):
+                    self.logger.warning(f"NSE returned unexpected data type: {type(data)}")
+                    return documents
 
                 for item in data:
                     try:

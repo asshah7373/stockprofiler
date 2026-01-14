@@ -119,6 +119,33 @@ class PressReleasePipeline:
         'delay', 'suspend', 'terminate', 'lawsuit', 'investigation'
     ]
 
+    # Headers for BSE API
+    BSE_HEADERS = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'application/json, text/plain, */*',
+        'Accept-Language': 'en-US,en;q=0.9',
+        'Accept-Encoding': 'gzip, deflate, br',
+        'Referer': 'https://www.bseindia.com/',
+        'Origin': 'https://www.bseindia.com',
+    }
+
+    # Headers for NSE API
+    NSE_HEADERS = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'application/json, text/plain, */*',
+        'Accept-Language': 'en-US,en;q=0.9',
+        'Accept-Encoding': 'gzip, deflate, br',
+        'Referer': 'https://www.nseindia.com/',
+        'Origin': 'https://www.nseindia.com',
+        'Sec-Ch-Ua': '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
+        'Sec-Ch-Ua-Mobile': '?0',
+        'Sec-Ch-Ua-Platform': '"Windows"',
+        'Sec-Fetch-Dest': 'empty',
+        'Sec-Fetch-Mode': 'cors',
+        'Sec-Fetch-Site': 'same-origin',
+    }
+
+    # General headers for web scraping
     HEADERS = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
@@ -188,13 +215,23 @@ class PressReleasePipeline:
         """Get NSE session with cookies."""
         if self._nse_session is None:
             self._nse_session = requests.Session()
-            self._nse_session.headers.update(self.HEADERS)
+            self._nse_session.headers.update(self.NSE_HEADERS)
             try:
                 self._rate_limit_wait()
-                self._nse_session.get(self.NSE_BASE_URL, timeout=10)
+                response = self._nse_session.get(self.NSE_BASE_URL, timeout=10)
+                self.logger.debug(f"NSE session initialized, status: {response.status_code}, cookies: {len(self._nse_session.cookies)}")
+
+                # Sometimes need additional request to get cookies
+                if len(self._nse_session.cookies) == 0:
+                    self._rate_limit_wait()
+                    self._nse_session.get("https://www.nseindia.com/api/marketStatus", timeout=10)
             except Exception as e:
                 self.logger.warning(f"NSE session init error: {e}")
         return self._nse_session
+
+    def _reset_nse_session(self):
+        """Reset NSE session."""
+        self._nse_session = None
 
     # =========================================================================
     # BSE Press Releases
@@ -229,13 +266,17 @@ class PressReleasePipeline:
 
             response = requests.get(
                 self.BSE_PRESS_RELEASE_API,
-                headers=self.HEADERS,
+                headers=self.BSE_HEADERS,
                 params=params,
                 timeout=15
             )
 
             if response.status_code == 200:
-                data = response.json()
+                try:
+                    data = response.json()
+                except json.JSONDecodeError:
+                    self.logger.error(f"BSE response not JSON. First 200 chars: {response.text[:200]}")
+                    return releases
 
                 for item in data.get('Table', []):
                     try:
@@ -320,7 +361,17 @@ class PressReleasePipeline:
             )
 
             if response.status_code == 200:
-                data = response.json()
+                try:
+                    data = response.json()
+                except json.JSONDecodeError:
+                    self.logger.error(f"NSE response not JSON. First 200 chars: {response.text[:200]}")
+                    self._reset_nse_session()
+                    return releases
+
+                # Handle non-list responses
+                if not isinstance(data, list):
+                    self.logger.warning(f"NSE returned unexpected data type: {type(data)}")
+                    return releases
 
                 for item in data:
                     desc = (item.get('desc', '') or item.get('subject', '')).lower()
