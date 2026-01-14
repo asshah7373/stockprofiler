@@ -1410,7 +1410,8 @@ def backtest(
 
             # Compare with buy-and-hold
             if len(df) > 0:
-                buy_hold_return = (float(df['close'].iloc[-1]) / float(df['close'].iloc[0]) - 1) * 100
+                close_col = 'close' if 'close' in df.columns else 'Close'
+                buy_hold_return = (float(df[close_col].iloc[-1]) / float(df[close_col].iloc[0]) - 1) * 100
                 console.print(f"\n[bold]Benchmark:[/bold]")
                 bh_color = "green" if buy_hold_return > 0 else "red"
                 console.print(f"  Buy & Hold Return: [{bh_color}]{buy_hold_return:.2f}%[/{bh_color}]")
