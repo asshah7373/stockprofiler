@@ -28,11 +28,17 @@ source venv/bin/activate
 .\venv\Scripts\activate
 ```
 
-### Step 2: Install Core Dependencies
+### Step 2: Install Package
 
 ```bash
-# Install from requirements.txt
-pip install -r requirements.txt
+# Navigate to the project root (where pyproject.toml is located)
+cd /path/to/stockprofiler
+
+# Install in development mode (recommended)
+pip install -e .
+
+# Or install from requirements.txt only (not recommended - won't enable `python -m finagent.main`)
+# pip install -r finagent/requirements.txt
 ```
 
 ### Step 3: Install Optional Dependencies
@@ -78,6 +84,12 @@ pip install llama-parse
 ```bash
 # Test the installation
 python -c "from finagent.main import app; print('Installation successful!')"
+
+# Or run directly
+finagent --help
+
+# Or using python -m
+python -m finagent.main --help
 ```
 
 ## Configuration
@@ -236,15 +248,23 @@ The system automatically:
 
 ## Troubleshooting
 
-### Import Errors
+### Import Errors / ModuleNotFoundError
 
 ```bash
-# If you see "ModuleNotFoundError"
+# If you see "ModuleNotFoundError: No module named 'finagent'"
+# You need to install the package properly:
+
+# 1. Navigate to the project root (where pyproject.toml is located)
+cd /path/to/stockprofiler
+
+# 2. Install in development mode
 pip install -e .
 
-# Or ensure you're in the right directory
-cd /path/to/stockprofiler/finagent
+# 3. Now you can run from anywhere:
 python -m finagent.main status
+
+# Or use the finagent command directly:
+finagent status
 ```
 
 ### TA-Lib Installation Issues
