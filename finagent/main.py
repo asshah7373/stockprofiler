@@ -816,6 +816,616 @@ def compliance_report(
     console.print(f"  • Recommendations (30d): {summary.get('recommendations_last_30_days', 0)}")
 
 
+@app.command()
+def institutional(
+    data_type: str = typer.Argument("fii-dii", help="Data type: fii-dii, bulk, block, all"),
+    ticker: Optional[str] = typer.Option(None, "--ticker", "-t", help="Filter by ticker"),
+    days: int = typer.Option(7, "--days", "-d", help="Days to look back"),
+    output_json: bool = typer.Option(False, "--json", "-j", help="Output as JSON")
+):
+    """
+    Fetch and display institutional investment data.
+
+    Data types:
+    - fii-dii: FII/DII daily activity (highest alpha for market direction)
+    - bulk: Bulk deals (>0.5% of shares)
+    - block: Block deals (>5 lakh shares or Rs 10 crore)
+    - insider: Insider trading (SAST filings)
+    - all: All institutional data
+
+    Examples:
+        finagent institutional fii-dii           # FII/DII flow last 7 days
+        finagent institutional bulk -t RELIANCE  # Bulk deals for RELIANCE
+        finagent institutional insider --days 30 # Insider trading last 30 days
+    """
+    from .pipelines.institutional_data import InstitutionalDataPipeline
+
+    console.print(Panel(
+        f"[bold cyan]Institutional Data: {data_type.upper()}[/bold cyan]\n\n"
+        f"Lookback: {days} days" +
+        (f"\nTicker: {ticker}" if ticker else ""),
+        title="FinAgent"
+    ))
+
+    pipeline = InstitutionalDataPipeline()
+
+    try:
+        if data_type.lower() in ['fii-dii', 'fiidii', 'fii', 'dii']:
+            # FII/DII Activity
+            with Progress(
+                SpinnerColumn(),
+                TextColumn("[progress.description]{task.description}"),
+                console=console
+            ) as progress:
+                task = progress.add_task("Fetching FII/DII data...", total=None)
+                trend = pipeline.get_fii_dii_trend(days=days)
+                progress.update(task, description="[green]Complete[/green]")
+
+            if output_json:
+                console.print_json(json.dumps(trend, indent=2, default=str))
+            else:
+                console.print("\n[bold]FII Activity:[/bold]")
+                fii = trend.get('fii', {})
+                fii_color = "green" if fii.get('sentiment') == 'bullish' else "red" if fii.get('sentiment') == 'bearish' else "yellow"
+                console.print(f"  Net Flow: [{fii_color}]₹{fii.get('net_total_cr', 0):,.0f} Cr[/{fii_color}]")
+                console.print(f"  Positive Days: {fii.get('positive_days', 0)}/{fii.get('total_days', 0)}")
+                console.print(f"  Sentiment: [{fii_color}]{fii.get('sentiment', 'N/A').upper()}[/{fii_color}]")
+
+                console.print("\n[bold]DII Activity:[/bold]")
+                dii = trend.get('dii', {})
+                dii_color = "green" if dii.get('sentiment') == 'bullish' else "red" if dii.get('sentiment') == 'bearish' else "yellow"
+                console.print(f"  Net Flow: [{dii_color}]₹{dii.get('net_total_cr', 0):,.0f} Cr[/{dii_color}]")
+                console.print(f"  Positive Days: {dii.get('positive_days', 0)}/{dii.get('total_days', 0)}")
+                console.print(f"  Sentiment: [{dii_color}]{dii.get('sentiment', 'N/A').upper()}[/{dii_color}]")
+
+                combined = trend.get('combined_sentiment', 'neutral')
+                combined_color = "green" if 'bullish' in combined else "red" if 'bearish' in combined else "yellow"
+                console.print(f"\n[bold]Combined Institutional Sentiment:[/bold] [{combined_color}]{combined.upper().replace('_', ' ')}[/{combined_color}]")
+
+        elif data_type.lower() in ['bulk', 'block', 'deals']:
+            # Bulk/Block Deals
+            with Progress(
+                SpinnerColumn(),
+                TextColumn("[progress.description]{task.description}"),
+                console=console
+            ) as progress:
+                task = progress.add_task("Fetching bulk/block deals...", total=None)
+                deals = pipeline.fetch_all_bulk_block_deals(days_back=days, ticker=ticker)
+                progress.update(task, description="[green]Complete[/green]")
+
+            if output_json:
+                console.print_json(json.dumps([d.to_dict() for d in deals], indent=2, default=str))
+            else:
+                if not deals:
+                    console.print("[yellow]No bulk/block deals found.[/yellow]")
+                else:
+                    console.print(f"\n[bold]Recent Bulk/Block Deals ({len(deals)}):[/bold]\n")
+
+                    table = Table(show_header=True, header_style="bold cyan")
+                    table.add_column("Date", width=12)
+                    table.add_column("Ticker", style="bold", width=12)
+                    table.add_column("Type", width=6)
+                    table.add_column("Client", width=25)
+                    table.add_column("Trade", width=6)
+                    table.add_column("Value (Cr)", justify="right")
+
+                    for deal in deals[:20]:
+                        trade_color = "green" if deal.trade_type == 'buy' else "red" if deal.trade_type == 'sell' else "white"
+                        table.add_row(
+                            deal.date[:10] if deal.date else 'N/A',
+                            deal.ticker,
+                            deal.deal_type.upper()[:5],
+                            (deal.client_name[:23] + '..') if len(deal.client_name) > 25 else deal.client_name,
+                            f"[{trade_color}]{deal.trade_type.upper()[:4]}[/{trade_color}]",
+                            f"{deal.value:.1f}"
+                        )
+
+                    console.print(table)
+
+        elif data_type.lower() in ['insider', 'sast']:
+            # Insider Trading
+            with Progress(
+                SpinnerColumn(),
+                TextColumn("[progress.description]{task.description}"),
+                console=console
+            ) as progress:
+                task = progress.add_task("Fetching insider trading data...", total=None)
+
+                if ticker:
+                    sentiment = pipeline.get_insider_sentiment(ticker, days_back=days)
+                    progress.update(task, description="[green]Complete[/green]")
+
+                    if output_json:
+                        console.print_json(json.dumps(sentiment, indent=2, default=str))
+                    else:
+                        console.print(f"\n[bold]Insider Trading Analysis: {sentiment['ticker']}[/bold]\n")
+                        console.print(f"  Total Filings: {sentiment.get('total_filings', 0)}")
+
+                        buys = sentiment.get('buys', {})
+                        sells = sentiment.get('sells', {})
+                        console.print(f"\n  [bold]Buys:[/bold]")
+                        console.print(f"    Count: {buys.get('count', 0)}")
+                        console.print(f"    Value: ₹{buys.get('value_lakhs', 0):.2f} Lakhs")
+                        console.print(f"    Promoter Buys: {buys.get('promoter_buys', 0)}")
+
+                        console.print(f"\n  [bold]Sells:[/bold]")
+                        console.print(f"    Count: {sells.get('count', 0)}")
+                        console.print(f"    Value: ₹{sells.get('value_lakhs', 0):.2f} Lakhs")
+                        console.print(f"    Promoter Sells: {sells.get('promoter_sells', 0)}")
+
+                        sent = sentiment.get('sentiment', 'neutral')
+                        sent_color = "green" if 'bullish' in sent else "red" if 'bearish' in sent else "yellow"
+                        console.print(f"\n  [bold]Sentiment:[/bold] [{sent_color}]{sent.upper().replace('_', ' ')}[/{sent_color}]")
+                else:
+                    filings = pipeline.fetch_nse_insider_trading(days_back=days)
+                    progress.update(task, description="[green]Complete[/green]")
+
+                    if output_json:
+                        console.print_json(json.dumps([f.to_dict() for f in filings], indent=2, default=str))
+                    else:
+                        if not filings:
+                            console.print("[yellow]No insider trading filings found.[/yellow]")
+                        else:
+                            console.print(f"\n[bold]Recent Insider Trading ({len(filings)}):[/bold]\n")
+
+                            table = Table(show_header=True, header_style="bold cyan")
+                            table.add_column("Date", width=12)
+                            table.add_column("Ticker", style="bold", width=12)
+                            table.add_column("Acquirer", width=25)
+                            table.add_column("Type", width=10)
+                            table.add_column("Trade", width=6)
+                            table.add_column("% After", justify="right")
+
+                            for filing in filings[:20]:
+                                trade_color = "green" if filing.is_bullish else "red"
+                                table.add_row(
+                                    filing.date[:10] if filing.date else 'N/A',
+                                    filing.ticker,
+                                    (filing.acquirer_name[:23] + '..') if len(filing.acquirer_name) > 25 else filing.acquirer_name,
+                                    filing.acquirer_type[:10] if filing.acquirer_type else 'N/A',
+                                    f"[{trade_color}]{filing.trade_type.upper()[:4]}[/{trade_color}]",
+                                    f"{filing.percent_after:.2f}%"
+                                )
+
+                            console.print(table)
+
+        elif data_type.lower() == 'all':
+            # All data summary
+            console.print("\n[bold]Fetching all institutional data...[/bold]")
+
+            trend = pipeline.get_fii_dii_trend(days=days)
+            deals = pipeline.fetch_all_bulk_block_deals(days_back=days, ticker=ticker)
+
+            console.print(f"\n[bold]Summary:[/bold]")
+            console.print(f"  FII/DII Sentiment: {trend.get('combined_sentiment', 'N/A').upper()}")
+            console.print(f"  Total Bulk/Block Deals: {len(deals)}")
+
+            stats = pipeline.get_stats()
+            console.print(f"\n[bold]Database Stats:[/bold]")
+            console.print(f"  FII/DII Records: {stats.get('fii_dii_records', 0)}")
+            console.print(f"  Bulk/Block Deals: {stats.get('bulk_block_deals', 0)}")
+            console.print(f"  SAST Filings: {stats.get('sast_filings', 0)}")
+
+    except Exception as e:
+        console.print(f"[red]Error: {e}[/red]")
+        raise typer.Exit(1)
+
+
+@app.command()
+def signals(
+    ticker: str = typer.Argument(..., help="Stock ticker (e.g., RELIANCE.NS)"),
+    horizon: str = typer.Option("1w", "--horizon", "-h", help="Time horizon (intraday, 1d, 1w, 1m, 3m, 1y)"),
+    output_json: bool = typer.Option(False, "--json", "-j", help="Output as JSON")
+):
+    """
+    Generate combined signals and recommendation for a stock.
+
+    Combines multiple signal sources:
+    - Technical indicators (RSI, MACD, Bollinger Bands)
+    - Fundamental analysis (P/E, ROE, debt)
+    - Institutional flow (FII/DII activity)
+    - Bulk/Block deals
+    - Insider trading (SAST)
+    - News sentiment
+
+    Example:
+        finagent signals RELIANCE.NS --horizon 1w
+    """
+    from .signals.signal_combiner import SignalCombiner, TimeHorizon as SignalTimeHorizon
+    from .pipelines.institutional_data import InstitutionalDataPipeline
+    from .analysis.technical import TechnicalAnalyzer
+    from .pipelines.sentiment_data import SentimentPipeline
+
+    horizon_map = {
+        'intraday': SignalTimeHorizon.INTRADAY,
+        '1d': SignalTimeHorizon.SHORT,
+        '1w': SignalTimeHorizon.WEEKLY,
+        '1m': SignalTimeHorizon.MONTHLY,
+        '3m': SignalTimeHorizon.QUARTERLY,
+        '1y': SignalTimeHorizon.LONG,
+    }
+
+    time_horizon = horizon_map.get(horizon.lower(), SignalTimeHorizon.WEEKLY)
+
+    console.print(Panel(
+        f"[bold cyan]Combined Signal Analysis: {ticker}[/bold cyan]\n\n"
+        f"Time Horizon: {horizon}",
+        title="FinAgent"
+    ))
+
+    # Initialize components
+    combiner = SignalCombiner()
+    institutional = InstitutionalDataPipeline()
+    technical_analyzer = TechnicalAnalyzer()
+    perceiver = PerceiverAgent()
+
+    try:
+        signals = []
+
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            console=console
+        ) as progress:
+            # 1. Technical signals
+            task = progress.add_task("Fetching price data...", total=None)
+            perceived_data = perceiver.perceive(ticker)
+            progress.update(task, description="[green]Price data fetched[/green]")
+
+            current_price = None
+            company_name = perceived_data.get("overview", {}).get("company_name", ticker)
+
+            if perceived_data.get("technical_data", {}).get("ohlcv"):
+                import pandas as pd
+                ohlcv = perceived_data["technical_data"]["ohlcv"]
+                df = pd.DataFrame.from_dict(ohlcv, orient='index')
+                df.index = pd.to_datetime(df.index)
+                df = df.sort_index()
+
+                task = progress.add_task("Calculating technical indicators...", total=None)
+                technical_data = technical_analyzer.analyze(df)
+                progress.update(task, description="[green]Technical analysis complete[/green]")
+
+                current_price = float(df['close'].iloc[-1]) if 'close' in df.columns else None
+
+                # Generate technical signal
+                indicators = {
+                    'rsi': technical_data.get('rsi_14'),
+                    'macd_histogram': technical_data.get('macd', {}).get('histogram'),
+                    'bb_position': technical_data.get('bollinger', {}).get('position'),
+                    'sma_trend': technical_data.get('signals', {}).get('trend'),
+                    'volume_trend': technical_data.get('signals', {}).get('volume_trend')
+                }
+                tech_signal = combiner.generate_technical_signal(ticker, indicators)
+                if tech_signal:
+                    signals.append(tech_signal)
+
+            # 2. Institutional signals
+            task = progress.add_task("Fetching institutional data...", total=None)
+            fii_dii_trend = institutional.get_fii_dii_trend(days=5)
+            inst_signal = combiner.generate_institutional_signal(ticker, fii_dii_trend)
+            if inst_signal:
+                signals.append(inst_signal)
+            progress.update(task, description="[green]Institutional data fetched[/green]")
+
+            # 3. Bulk/Block deal signals
+            task = progress.add_task("Checking bulk/block deals...", total=None)
+            ticker_clean = ticker.replace('.NS', '').replace('.BO', '').upper()
+            deal_data = institutional.get_stock_deal_activity(ticker_clean, days_back=30)
+            deal_signal = combiner.generate_bulk_block_signal(ticker, deal_data)
+            if deal_signal:
+                signals.append(deal_signal)
+            progress.update(task, description="[green]Deals checked[/green]")
+
+            # 4. Insider trading signals
+            task = progress.add_task("Checking insider activity...", total=None)
+            insider_data = institutional.get_insider_sentiment(ticker_clean, days_back=90)
+            insider_signal = combiner.generate_insider_signal(ticker, insider_data)
+            if insider_signal:
+                signals.append(insider_signal)
+            progress.update(task, description="[green]Insider activity checked[/green]")
+
+            # 5. News sentiment
+            task = progress.add_task("Fetching news sentiment...", total=None)
+            try:
+                sentiment_pipeline = SentimentPipeline()
+                sentiment_summary = sentiment_pipeline.get_sentiment_summary(ticker_clean)
+                news_data = {
+                    'sentiment_score': sentiment_summary.get('overall_sentiment', 0),
+                    'article_count': sentiment_summary.get('article_count', 0)
+                }
+                news_signal = combiner.generate_news_signal(ticker, news_data)
+                if news_signal:
+                    signals.append(news_signal)
+            except Exception:
+                pass  # News data optional
+            progress.update(task, description="[green]News sentiment fetched[/green]")
+
+            # Combine signals
+            task = progress.add_task("Combining signals...", total=None)
+            recommendation = combiner.combine_signals(
+                ticker=ticker,
+                signals=signals,
+                time_horizon=time_horizon,
+                current_price=current_price,
+                company_name=company_name
+            )
+            progress.update(task, description="[green]Signals combined[/green]")
+
+        # Display results
+        if output_json:
+            console.print_json(json.dumps(recommendation.to_dict(), indent=2, default=str))
+        else:
+            # Action with color
+            action_colors = {
+                'STRONG_BUY': 'bold green',
+                'BUY': 'green',
+                'HOLD': 'yellow',
+                'SELL': 'red',
+                'STRONG_SELL': 'bold red'
+            }
+            action_color = action_colors.get(recommendation.action, 'white')
+
+            console.print(f"\n[bold]Stock:[/bold] {recommendation.ticker} ({recommendation.company_name})")
+            if current_price:
+                console.print(f"[bold]Current Price:[/bold] ₹{current_price:,.2f}")
+            console.print(f"\n[bold]RECOMMENDATION:[/bold] [{action_color}]{recommendation.action}[/{action_color}]")
+            console.print(f"[bold]Score:[/bold] {recommendation.score:.1f}/100")
+            console.print(f"[bold]Confidence:[/bold] {recommendation.confidence*100:.0f}%")
+
+            if recommendation.target_price and recommendation.stop_loss:
+                console.print(f"\n[bold]Target Price:[/bold] ₹{recommendation.target_price:,.2f}")
+                console.print(f"[bold]Stop Loss:[/bold] ₹{recommendation.stop_loss:,.2f}")
+                if recommendation.expected_return:
+                    console.print(f"[bold]Expected Return:[/bold] {recommendation.expected_return:.1f}%")
+
+            console.print(f"\n[bold]Key Factors:[/bold]")
+            for factor in recommendation.key_factors:
+                console.print(f"  • {factor}")
+
+            if recommendation.risks:
+                console.print(f"\n[bold]Risks:[/bold]")
+                for risk in recommendation.risks:
+                    console.print(f"  • {risk}")
+
+            console.print(f"\n[bold]Individual Signals ({len(signals)}):[/bold]")
+            table = Table(show_header=True, header_style="bold cyan")
+            table.add_column("Source", width=15)
+            table.add_column("Signal", width=12)
+            table.add_column("Confidence", justify="right")
+            table.add_column("Detail", width=40)
+
+            for sig in signals:
+                signal_color = "green" if sig.strength.value > 0 else "red" if sig.strength.value < 0 else "yellow"
+                table.add_row(
+                    sig.signal_type.value.title(),
+                    f"[{signal_color}]{sig.strength.name}[/{signal_color}]",
+                    f"{sig.confidence*100:.0f}%",
+                    (sig.source[:38] + '..') if len(sig.source) > 40 else sig.source
+                )
+
+            console.print(table)
+
+    except Exception as e:
+        console.print(f"[red]Error: {e}[/red]")
+        import traceback
+        console.print(traceback.format_exc())
+        raise typer.Exit(1)
+
+
+@app.command()
+def backtest(
+    ticker: str = typer.Argument(..., help="Stock ticker (e.g., RELIANCE.NS)"),
+    strategy: str = typer.Option("rsi", "--strategy", "-s", help="Strategy: rsi, macd, bollinger, sma, combined"),
+    days: int = typer.Option(365, "--days", "-d", help="Days of historical data"),
+    capital: float = typer.Option(100000, "--capital", "-c", help="Initial capital (INR)"),
+    stop_loss: float = typer.Option(0.05, "--stop-loss", help="Stop loss percentage (0.05 = 5%)"),
+    take_profit: float = typer.Option(0.10, "--take-profit", help="Take profit percentage"),
+    optimize: bool = typer.Option(False, "--optimize", "-o", help="Optimize strategy parameters"),
+    output_json: bool = typer.Option(False, "--json", "-j", help="Output as JSON")
+):
+    """
+    Backtest trading strategies using VectorBT.
+
+    Available strategies:
+    - rsi: RSI mean reversion (buy oversold, sell overbought)
+    - macd: MACD crossover (trend following)
+    - bollinger: Bollinger Bands mean reversion
+    - sma: SMA crossover (trend following)
+    - combined: RSI + MACD + SMA filter
+
+    Example:
+        finagent backtest RELIANCE.NS --strategy rsi --days 365
+        finagent backtest TCS.NS --strategy combined --optimize
+    """
+    from .strategies.vectorbt_framework import VectorBTFramework
+    import pandas as pd
+
+    console.print(Panel(
+        f"[bold cyan]Backtest: {ticker}[/bold cyan]\n\n"
+        f"Strategy: {strategy.upper()}\n"
+        f"Period: {days} days\n"
+        f"Capital: ₹{capital:,.0f}",
+        title="FinAgent Backtest"
+    ))
+
+    # Fetch historical data
+    perceiver = PerceiverAgent()
+
+    try:
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            console=console
+        ) as progress:
+            task = progress.add_task("Fetching historical data...", total=None)
+            perceived_data = perceiver.perceive(ticker)
+
+            if not perceived_data.get("technical_data", {}).get("ohlcv"):
+                console.print("[red]Error: No historical data available for backtesting.[/red]")
+                raise typer.Exit(1)
+
+            ohlcv = perceived_data["technical_data"]["ohlcv"]
+            df = pd.DataFrame.from_dict(ohlcv, orient='index')
+            df.index = pd.to_datetime(df.index)
+            df = df.sort_index()
+
+            # Ensure we have enough data
+            if len(df) < 50:
+                console.print(f"[red]Error: Insufficient data ({len(df)} days). Need at least 50 days.[/red]")
+                raise typer.Exit(1)
+
+            progress.update(task, description=f"[green]Loaded {len(df)} days of data[/green]")
+
+            # Initialize framework
+            framework = VectorBTFramework(
+                initial_capital=capital,
+                commission_pct=0.001,  # 0.1% typical for Indian brokers
+                slippage_pct=0.001
+            )
+
+            # Run backtest
+            task = progress.add_task(f"Running {strategy.upper()} backtest...", total=None)
+
+            if optimize:
+                progress.update(task, description=f"Optimizing {strategy.upper()} parameters...")
+
+                if strategy.lower() == 'rsi':
+                    opt_result = framework.optimize_rsi_strategy(df, ticker=ticker)
+                elif strategy.lower() == 'sma':
+                    opt_result = framework.optimize_sma_crossover(df, ticker=ticker)
+                else:
+                    console.print(f"[yellow]Optimization not available for {strategy}. Running default.[/yellow]")
+                    opt_result = None
+
+                if opt_result and opt_result.get('best_result'):
+                    result = opt_result['best_result']
+                    best_params = opt_result.get('best_params', {})
+                    progress.update(task, description="[green]Optimization complete[/green]")
+
+                    console.print(f"\n[bold]Optimized Parameters:[/bold]")
+                    for k, v in best_params.items():
+                        console.print(f"  {k}: {v}")
+                else:
+                    console.print("[yellow]Optimization found no improvement. Using default parameters.[/yellow]")
+                    result = None
+            else:
+                opt_result = None
+                result = None
+
+            # Run standard backtest if no optimization result
+            if result is None:
+                if strategy.lower() == 'rsi':
+                    result = framework.backtest_rsi_strategy(
+                        df, ticker=ticker,
+                        stop_loss_pct=stop_loss,
+                        take_profit_pct=take_profit
+                    )
+                elif strategy.lower() == 'macd':
+                    result = framework.backtest_macd_strategy(
+                        df, ticker=ticker,
+                        stop_loss_pct=stop_loss,
+                        take_profit_pct=take_profit
+                    )
+                elif strategy.lower() == 'bollinger':
+                    result = framework.backtest_bollinger_strategy(
+                        df, ticker=ticker,
+                        stop_loss_pct=stop_loss,
+                        take_profit_pct=take_profit
+                    )
+                elif strategy.lower() == 'sma':
+                    result = framework.backtest_sma_crossover(
+                        df, ticker=ticker,
+                        stop_loss_pct=stop_loss,
+                        take_profit_pct=take_profit
+                    )
+                elif strategy.lower() == 'combined':
+                    result = framework.backtest_combined_strategy(
+                        df, ticker=ticker,
+                        stop_loss_pct=stop_loss,
+                        take_profit_pct=take_profit
+                    )
+                else:
+                    console.print(f"[red]Unknown strategy: {strategy}[/red]")
+                    raise typer.Exit(1)
+
+            progress.update(task, description="[green]Backtest complete[/green]")
+
+        # Display results
+        if output_json:
+            console.print_json(json.dumps(result.to_dict(), indent=2, default=str))
+        else:
+            return_color = "green" if result.total_return > 0 else "red"
+            sharpe_color = "green" if result.sharpe_ratio > 1 else "yellow" if result.sharpe_ratio > 0 else "red"
+            dd_color = "green" if result.max_drawdown > -10 else "yellow" if result.max_drawdown > -20 else "red"
+
+            console.print(f"\n[bold]Strategy:[/bold] {result.strategy_name}")
+            console.print(f"[bold]Period:[/bold] {result.start_date} to {result.end_date}")
+
+            console.print(f"\n[bold]Performance:[/bold]")
+            console.print(f"  Initial Capital: ₹{result.initial_capital:,.0f}")
+            console.print(f"  Final Value: ₹{result.final_value:,.0f}")
+            console.print(f"  Total Return: [{return_color}]{result.total_return:.2f}%[/{return_color}]")
+            if result.cagr:
+                console.print(f"  CAGR: [{return_color}]{result.cagr:.2f}%[/{return_color}]")
+
+            console.print(f"\n[bold]Risk Metrics:[/bold]")
+            console.print(f"  Sharpe Ratio: [{sharpe_color}]{result.sharpe_ratio:.2f}[/{sharpe_color}]")
+            if result.sortino_ratio:
+                console.print(f"  Sortino Ratio: {result.sortino_ratio:.2f}")
+            console.print(f"  Max Drawdown: [{dd_color}]{result.max_drawdown:.2f}%[/{dd_color}]")
+
+            console.print(f"\n[bold]Trade Statistics:[/bold]")
+            console.print(f"  Total Trades: {result.total_trades}")
+            console.print(f"  Win Rate: {result.win_rate:.1f}%")
+            console.print(f"  Profit Factor: {result.profit_factor:.2f}")
+            if result.avg_holding_days:
+                console.print(f"  Avg Holding: {result.avg_holding_days:.1f} days")
+
+            # Recent trades
+            if result.trades:
+                console.print(f"\n[bold]Recent Trades:[/bold]")
+                table = Table(show_header=True, header_style="bold cyan")
+                table.add_column("Entry", width=12)
+                table.add_column("Exit", width=12)
+                table.add_column("Entry Price", justify="right")
+                table.add_column("Exit Price", justify="right")
+                table.add_column("Return", justify="right")
+
+                for trade in result.trades[-10:]:
+                    ret_color = "green" if trade.get('return_pct', 0) > 0 else "red"
+                    table.add_row(
+                        str(trade.get('entry_date', 'N/A'))[:10],
+                        str(trade.get('exit_date', 'N/A'))[:10],
+                        f"₹{trade.get('entry_price', 0):,.2f}",
+                        f"₹{trade.get('exit_price', 0):,.2f}",
+                        f"[{ret_color}]{trade.get('return_pct', 0):.2f}%[/{ret_color}]"
+                    )
+
+                console.print(table)
+
+            # Compare with buy-and-hold
+            if len(df) > 0:
+                buy_hold_return = (float(df['close'].iloc[-1]) / float(df['close'].iloc[0]) - 1) * 100
+                console.print(f"\n[bold]Benchmark:[/bold]")
+                bh_color = "green" if buy_hold_return > 0 else "red"
+                console.print(f"  Buy & Hold Return: [{bh_color}]{buy_hold_return:.2f}%[/{bh_color}]")
+
+                alpha = result.total_return - buy_hold_return
+                alpha_color = "green" if alpha > 0 else "red"
+                console.print(f"  Strategy Alpha: [{alpha_color}]{alpha:.2f}%[/{alpha_color}]")
+
+    except ImportError as e:
+        console.print(f"[red]Error: VectorBT not installed. Install with: pip install vectorbt[/red]")
+        console.print(f"[dim]Details: {e}[/dim]")
+        raise typer.Exit(1)
+    except Exception as e:
+        console.print(f"[red]Error: {e}[/red]")
+        import traceback
+        console.print(traceback.format_exc())
+        raise typer.Exit(1)
+
+
 @app.callback()
 def main(
     version: bool = typer.Option(False, "--version", "-V", help="Show version")

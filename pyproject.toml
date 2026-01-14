@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "finagent"
-version = "0.1.0"
+version = "1.0.0"
 description = "Autonomous Financial Multi-Agent System for Indian Markets"
 readme = "finagent/README.md"
 requires-python = ">=3.9"
@@ -53,6 +53,13 @@ dev = [
     "black>=23.0.0",
     "ruff>=0.1.0",
     "mypy>=1.0.0",
+]
+backtest = [
+    "vectorbt>=0.26.0",
+]
+all = [
+    "vectorbt>=0.26.0",
+    "newsapi-python>=0.2.6",
 ]
 
 [project.scripts]

@@ -7,6 +7,7 @@ This module contains data ingestion pipelines:
 - SentimentPipeline: News and sentiment data
 - PressReleasePipeline: Company press releases
 - IngestionOrchestrator: Batch ingestion coordinator
+- InstitutionalDataPipeline: FII/DII activity, Bulk/Block deals, SAST filings
 """
 
 from .structured_data import MarketDataPipeline
@@ -14,6 +15,14 @@ from .unstructured_data import CircularPipeline, CircularDocument, DocumentType
 from .sentiment_data import SentimentPipeline
 from .press_releases import PressReleasePipeline, PressRelease
 from .ingestion_orchestrator import IngestionOrchestrator, IngestionJob, IngestionResult
+from .institutional_data import (
+    InstitutionalDataPipeline,
+    InstitutionalActivity,
+    BulkBlockDeal,
+    SASTFiling,
+    DealType,
+    InstitutionalType,
+)
 
 __all__ = [
     "MarketDataPipeline",
@@ -26,4 +35,10 @@ __all__ = [
     "IngestionOrchestrator",
     "IngestionJob",
     "IngestionResult",
+    "InstitutionalDataPipeline",
+    "InstitutionalActivity",
+    "BulkBlockDeal",
+    "SASTFiling",
+    "DealType",
+    "InstitutionalType",
 ]
