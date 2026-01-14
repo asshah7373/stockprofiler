@@ -8,6 +8,9 @@ A dual-agent financial analysis system for Indian equity markets that provides i
 - **BSE/NSE Integration**: Direct API integration for circulars, announcements, and filings
 - **RAG System**: ChromaDB vector store for document retrieval and citation
 - **Technical Analysis**: TA-Lib indicators (RSI, MACD, Bollinger Bands, etc.)
+- **Institutional Data**: FII/DII flows, Bulk/Block deals, Insider trading (SAST)
+- **Signal Combiner**: Merges technical, fundamental, institutional, and news signals
+- **VectorBT Backtesting**: Fast vectorized strategy backtesting with optimization
 - **SEBI Compliance**: Risk profiling, audit trail, mandatory disclaimers
 - **No Hallucination**: All calculations are programmatic, all claims are cited
 
@@ -17,7 +20,7 @@ A dual-agent financial analysis system for Indian equity markets that provides i
 
 ```bash
 # Clone the repository
-cd stockprofiler/finagent
+cd stockprofiler
 
 # Create virtual environment (recommended)
 python -m venv venv
@@ -25,8 +28,14 @@ source venv/bin/activate  # Linux/Mac
 # or
 .\venv\Scripts\activate  # Windows
 
-# Install dependencies
-pip install -r requirements.txt
+# Install base package
+pip install -e .
+
+# Install with backtesting support (optional)
+pip install -e ".[backtest]"
+
+# Install all optional features
+pip install -e ".[all]"
 ```
 
 ### 2. Configuration
@@ -153,6 +162,107 @@ python -m finagent.main suggest --count 5
 # Filter by sector
 python -m finagent.main suggest --sector IT
 python -m finagent.main suggest --sector BANKING
+
+# Time horizon-based suggestions
+python -m finagent.main suggest --horizon intraday    # Today's opportunities
+python -m finagent.main suggest --horizon 1w -n 10    # Weekly picks
+python -m finagent.main suggest --horizon 1m          # Monthly plays
+
+# Commodity-linked stocks
+python -m finagent.main suggest --commodity gold      # Gold beneficiaries
+python -m finagent.main suggest --commodity oil       # Oil & gas plays
+```
+
+### Institutional Data (High Alpha Signals)
+
+```bash
+# FII/DII Activity - Market direction indicator
+python -m finagent.main institutional fii-dii
+python -m finagent.main institutional fii-dii --days 30
+
+# Bulk/Block Deals - Large institutional trades
+python -m finagent.main institutional bulk
+python -m finagent.main institutional bulk -t RELIANCE  # Specific stock
+
+# Insider Trading (SAST) - Promoter confidence
+python -m finagent.main institutional insider --days 90
+python -m finagent.main institutional insider -t TCS    # Specific stock
+
+# All institutional data summary
+python -m finagent.main institutional all
+
+# JSON output
+python -m finagent.main institutional fii-dii --json
+```
+
+### Combined Signal Analysis
+
+```bash
+# Generate combined recommendation with all signals
+python -m finagent.main signals RELIANCE.NS
+
+# Specify time horizon (affects signal weights)
+python -m finagent.main signals TCS.NS --horizon intraday
+python -m finagent.main signals INFY.NS --horizon 1w
+python -m finagent.main signals HDFCBANK.NS --horizon 1m
+python -m finagent.main signals ITC.NS --horizon 1y
+
+# JSON output for API integration
+python -m finagent.main signals WIPRO.NS --json
+```
+
+The signals command combines:
+- Technical indicators (RSI, MACD, Bollinger Bands)
+- Institutional flow (FII/DII activity)
+- Bulk/Block deals
+- Insider trading (SAST)
+- News sentiment
+
+Signal weights vary by time horizon:
+
+| Signal Type | Intraday | Weekly | Monthly | Long-term |
+|-------------|----------|--------|---------|-----------|
+| Technical | 40% | 25% | 20% | 3% |
+| Institutional | 25% | 15% | 20% | 15% |
+| News/Catalyst | 20% | 35% | 20% | 10% |
+| Fundamental | 3% | 5% | 25% | 45% |
+| Insider | 2% | 5% | 10% | 25% |
+
+### Strategy Backtesting
+
+```bash
+# Backtest RSI strategy (default)
+python -m finagent.main backtest RELIANCE.NS
+
+# Different strategies
+python -m finagent.main backtest TCS.NS --strategy rsi
+python -m finagent.main backtest INFY.NS --strategy macd
+python -m finagent.main backtest HDFCBANK.NS --strategy bollinger
+python -m finagent.main backtest ITC.NS --strategy sma
+python -m finagent.main backtest WIPRO.NS --strategy combined
+
+# Custom parameters
+python -m finagent.main backtest RELIANCE.NS --days 365 --capital 500000
+python -m finagent.main backtest TCS.NS --stop-loss 0.03 --take-profit 0.08
+
+# Parameter optimization (grid search)
+python -m finagent.main backtest RELIANCE.NS --strategy rsi --optimize
+python -m finagent.main backtest TCS.NS --strategy sma --optimize
+
+# JSON output
+python -m finagent.main backtest INFY.NS --json
+```
+
+Available strategies:
+- `rsi`: RSI mean reversion (buy oversold <30, sell overbought >70)
+- `macd`: MACD crossover (trend following)
+- `bollinger`: Bollinger Bands mean reversion
+- `sma`: SMA crossover (20/50 or custom periods)
+- `combined`: RSI + MACD + SMA filter (multi-confirmation)
+
+**Note**: VectorBT is required for backtesting. Install with:
+```bash
+pip install -e ".[backtest]"
 ```
 
 ## Project Structure
@@ -169,7 +279,12 @@ finagent/
 │   ├── unstructured_data.py     # BSE/NSE circulars and filings
 │   ├── sentiment_data.py        # News sentiment analysis
 │   ├── press_releases.py        # Press release ingestion
+│   ├── institutional_data.py    # FII/DII, Bulk/Block, SAST data
 │   └── ingestion_orchestrator.py # Batch ingestion coordinator
+├── signals/
+│   └── signal_combiner.py       # Multi-signal combination engine
+├── strategies/
+│   └── vectorbt_framework.py    # VectorBT backtesting framework
 ├── rag/
 │   ├── vector_store.py          # ChromaDB vector database
 │   ├── embeddings.py            # Document embedding
@@ -177,6 +292,7 @@ finagent/
 ├── analysis/
 │   ├── technical.py             # TA-Lib indicators
 │   ├── fundamental.py           # Financial metrics
+│   ├── news_screener.py         # News-driven stock screening
 │   └── synthesizer.py           # Chain-of-Thought reasoning
 ├── risk_profile/
 │   ├── questionnaire.py         # SEBI risk profiling
@@ -212,6 +328,12 @@ finagent/
 ### News & Sentiment
 - **NewsAPI**: General news articles
 - **Finnhub**: Financial news with sentiment
+
+### Institutional Data (High Alpha Signals)
+- **FII/DII Activity**: Daily buy/sell data from NSE (indicates market direction)
+- **Bulk Deals**: Trades >0.5% of total shares (NSE/BSE)
+- **Block Deals**: Trades >5 lakh shares or ₹10 crore (negotiated deals)
+- **SAST Filings**: Insider trading disclosures (promoter buying = bullish)
 
 ## Document Types Ingested
 
@@ -311,6 +433,30 @@ pipeline.rate_limit = 2.0  # 2 seconds between requests
 | `NEWSAPI_KEY` | No | NewsAPI.org API key for news sentiment |
 | `FINNHUB_API_KEY` | No | Finnhub API key for financial news |
 | `LLAMA_CLOUD_API_KEY` | No | LlamaParse API key for PDF parsing |
+
+## Optional Dependencies
+
+Install optional features as needed:
+
+```bash
+# Base installation (core features)
+pip install -e .
+
+# With backtesting support (VectorBT)
+pip install -e ".[backtest]"
+
+# With all optional features
+pip install -e ".[all]"
+
+# Development dependencies
+pip install -e ".[dev]"
+```
+
+| Extra | Packages | Features |
+|-------|----------|----------|
+| `backtest` | vectorbt | Strategy backtesting, optimization |
+| `all` | vectorbt, newsapi-python | All optional features |
+| `dev` | pytest, black, ruff, mypy | Development & testing |
 
 ## Development
 
