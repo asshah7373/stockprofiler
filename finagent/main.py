@@ -524,7 +524,8 @@ def ingest_company(
     ticker: str = typer.Argument(..., help="Stock ticker (e.g., RELIANCE)"),
     days: int = typer.Option(365, "--days", "-d", help="Days to look back"),
     include_results: bool = typer.Option(True, "--results/--no-results", help="Include quarterly results"),
-    include_press: bool = typer.Option(True, "--press/--no-press", help="Include press releases")
+    include_press: bool = typer.Option(True, "--press/--no-press", help="Include press releases"),
+    force: bool = typer.Option(False, "--force", "-f", help="Re-process already ingested documents")
 ):
     """
     Comprehensive ingestion for a specific company.
@@ -535,6 +536,8 @@ def ingest_company(
     - Shareholding patterns
     - Corporate announcements
     - Press releases
+
+    By default, already-ingested documents are skipped. Use --force to re-process them.
     """
     from .pipelines.ingestion_orchestrator import IngestionOrchestrator
 
@@ -560,7 +563,8 @@ def ingest_company(
                 ticker=ticker,
                 days_back=days,
                 include_results=include_results,
-                include_press_releases=include_press
+                include_press_releases=include_press,
+                skip_existing=not force
             )
 
             progress.update(task, description="[green]Complete[/green]")

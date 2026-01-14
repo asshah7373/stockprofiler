@@ -461,6 +461,7 @@ class IngestionOrchestrator:
         include_results: bool = True,
         include_announcements: bool = True,
         include_press_releases: bool = True,
+        skip_existing: bool = True,
         progress_callback: Optional[Callable[[int, int, str], None]] = None
     ) -> Dict[str, Any]:
         """
@@ -472,6 +473,9 @@ class IngestionOrchestrator:
         - Shareholding patterns
         - Corporate announcements
         - Press releases
+
+        Args:
+            skip_existing: Skip documents already in database (default: True)
         """
         results = {
             'ticker': ticker,
@@ -494,6 +498,19 @@ class IngestionOrchestrator:
                 ticker=ticker,
                 days_back=days_back
             )
+
+            # Filter out already-ingested documents if skip_existing is True
+            if skip_existing:
+                existing_circular_ids = self.circular_pipeline.get_existing_doc_ids()
+                existing_press_ids = self.press_pipeline.get_existing_doc_ids()
+
+                for key in ['quarterly_results', 'announcements', 'board_meetings', 'shareholding']:
+                    if key in filings:
+                        original_count = len(filings[key])
+                        filings[key] = [doc for doc in filings[key] if doc.id not in existing_circular_ids]
+                        skipped = original_count - len(filings[key])
+                        if skipped > 0:
+                            self.logger.info(f"Skipped {skipped} already-ingested {key}")
 
             # Process by type
             if include_results:
@@ -535,6 +552,17 @@ class IngestionOrchestrator:
                     ticker=ticker,
                     days_back=days_back
                 )
+
+                # Filter out already-ingested press releases
+                if skip_existing:
+                    original_count = len(press_releases)
+                    # Reuse existing_press_ids from above if available, otherwise fetch
+                    if 'existing_press_ids' not in dir():
+                        existing_press_ids = self.press_pipeline.get_existing_doc_ids()
+                    press_releases = [pr for pr in press_releases if pr.id not in existing_press_ids]
+                    skipped = original_count - len(press_releases)
+                    if skipped > 0:
+                        self.logger.info(f"Skipped {skipped} already-ingested press releases")
 
                 for pr in press_releases:
                     try:
