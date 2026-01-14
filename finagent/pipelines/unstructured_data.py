@@ -307,6 +307,7 @@ class CircularPipeline:
                     try:
                         # Parse date
                         news_dt = item.get('NEWS_DT', '')
+                        filing_date = ''
                         if news_dt:
                             try:
                                 filing_date = datetime.strptime(
@@ -315,32 +316,36 @@ class CircularPipeline:
                             except ValueError:
                                 filing_date = news_dt
 
-                        # Determine document type
-                        cat_name = item.get('CATEGORYNAME', '')
+                        # Determine document type - handle None
+                        cat_name = item.get('CATEGORYNAME') or ''
                         doc_type = self._categorize_bse_document(cat_name)
 
                         # Build attachment URL
-                        attachment = item.get('ATTACHMENTNAME', '')
+                        attachment = item.get('ATTACHMENTNAME') or ''
                         if attachment and not attachment.startswith('http'):
                             attachment = f"https://www.bseindia.com/xml-data/corpfiling/AttachLive/{attachment}"
+
+                        # SCRIP_CD is an integer, convert to string
+                        scrip_cd = item.get('SCRIP_CD')
+                        ticker_str = str(scrip_cd) if scrip_cd is not None else ''
 
                         doc = CircularDocument(
                             id=self._generate_doc_id(
                                 attachment,
-                                item.get('HEADLINE', ''),
+                                item.get('HEADLINE') or '',
                                 news_dt
                             ),
-                            ticker=item.get('SCRIP_CD', ''),
-                            company_name=item.get('SLONGNAME', '') or item.get('NSURL', ''),
-                            title=item.get('HEADLINE', ''),
+                            ticker=ticker_str,
+                            company_name=item.get('SLONGNAME') or item.get('NSURL') or '',
+                            title=item.get('HEADLINE') or '',
                             url=attachment,
                             doc_type=doc_type.value,
                             exchange='BSE',
                             filing_date=filing_date,
                             category=cat_name,
-                            subcategory=item.get('SUBCATNAME', ''),
-                            description=item.get('MORE', ''),
-                            attachment_name=item.get('ATTACHMENTNAME', '')
+                            subcategory=item.get('SUBCATNAME') or '',
+                            description=item.get('MORE') or '',
+                            attachment_name=item.get('ATTACHMENTNAME') or ''
                         )
                         documents.append(doc)
 
@@ -384,6 +389,8 @@ class CircularPipeline:
 
     def _categorize_bse_document(self, category_name: str) -> DocumentType:
         """Map BSE category to DocumentType."""
+        if not category_name:
+            return DocumentType.ANNOUNCEMENT
         category_name = category_name.strip()
 
         for key, doc_type in self.BSE_CATEGORIES.items():
@@ -846,8 +853,10 @@ class CircularPipeline:
 
         for doc in documents:
             # Create a key based on ticker, date, and title prefix
+            # Ensure ticker is string (BSE returns integers)
+            ticker_str = str(doc.ticker).upper() if doc.ticker else ''
             key = (
-                doc.ticker.upper(),
+                ticker_str,
                 doc.filing_date[:10] if doc.filing_date else '',
                 doc.title[:50].lower() if doc.title else ''
             )
