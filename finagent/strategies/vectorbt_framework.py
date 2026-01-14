@@ -333,7 +333,8 @@ class VectorBTFramework:
         price_data: pd.DataFrame,
         ticker: str = "UNKNOWN",
         rsi_period: int = 14,
-        rsi_oversold: int = 35,
+        rsi_oversold: int = 30,
+        rsi_overbought: int = 70,
         macd_fast: int = 12,
         macd_slow: int = 26,
         macd_signal: int = 9,
@@ -342,16 +343,15 @@ class VectorBTFramework:
         take_profit_pct: float = 0.12
     ) -> StrategyResult:
         """
-        Combined strategy using RSI, MACD, and SMA filter.
+        Combined strategy using RSI, MACD crossovers, and SMA trend filter.
 
-        Entry conditions (all must be true):
-        - RSI < oversold threshold
-        - MACD histogram positive (bullish momentum)
-        - Price above SMA (uptrend)
+        Entry conditions (either):
+        - MACD bullish crossover (histogram turns positive) with RSI not overbought
+        - RSI bouncing from oversold (crosses above 30) with improving MACD
 
         Exit conditions (any):
-        - RSI > 60
-        - MACD histogram turns negative
+        - RSI > overbought threshold (70)
+        - MACD bearish crossover (histogram turns negative)
         - Stop loss / Take profit hit
         """
         vbt = self._ensure_vectorbt()
@@ -367,20 +367,41 @@ class VectorBTFramework:
         sma = vbt.MA.run(close, window=sma_period).ma.to_numpy()
         close_arr = close.to_numpy()
 
-        # Entry: RSI oversold AND MACD bullish AND above SMA
-        rsi_entry = rsi < rsi_oversold
-        macd_entry = macd_hist > 0
-        sma_filter = close_arr > sma
+        # MACD bullish crossover: histogram crosses from negative to positive
+        macd_prev = np.roll(macd_hist, 1)
+        macd_prev[0] = 0
+        macd_crossover = (macd_prev <= 0) & (macd_hist > 0)
 
-        entries = rsi_entry & macd_entry & sma_filter
+        # RSI bounce from oversold: was below 30, now above 30
+        rsi_prev = np.roll(rsi, 1)
+        rsi_prev[0] = 50
+        rsi_bounce = (rsi_prev < rsi_oversold) & (rsi >= rsi_oversold)
+
+        # MACD improving (less negative or more positive)
+        macd_improving = macd_hist > macd_prev
+
+        # Entry Signal 1: MACD bullish crossover when RSI not overbought
+        entry_macd = macd_crossover & (rsi < rsi_overbought)
+
+        # Entry Signal 2: RSI oversold bounce with MACD improving
+        entry_rsi = rsi_bounce & macd_improving
+
+        # Combined entry: either condition
+        entries = entry_macd | entry_rsi
+
+        # Optional: Use SMA as trend filter (only enter when above SMA for safety)
+        # Uncomment to be more conservative:
+        # sma_filter = close_arr > sma
+        # entries = entries & sma_filter
+
         # Shift to next bar for execution
         entries = np.roll(entries, 1)
         entries[0] = False
 
-        # Exit: RSI > 60 OR MACD turns bearish
-        rsi_exit = rsi > 60
-        macd_exit = macd_hist < 0
-        exits = rsi_exit | macd_exit
+        # Exit conditions
+        rsi_exit = rsi > rsi_overbought
+        macd_bearish = (macd_prev >= 0) & (macd_hist < 0)  # MACD bearish crossover
+        exits = rsi_exit | macd_bearish
         exits = np.roll(exits, 1)
         exits[0] = False
 
@@ -389,7 +410,7 @@ class VectorBTFramework:
             entries=entries,
             exits=exits,
             ticker=ticker,
-            strategy_name=f"Combined(RSI+MACD+SMA)",
+            strategy_name=f"Combined(RSI+MACD)",
             stop_loss_pct=stop_loss_pct,
             take_profit_pct=take_profit_pct
         )
