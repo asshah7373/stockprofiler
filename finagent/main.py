@@ -327,13 +327,16 @@ def ingest(
     days: int = typer.Option(7, "--days", "-d", help="Days to look back"),
     doc_type: str = typer.Option("all", "--type", help="Document type (circulars, press, all)"),
     no_download: bool = typer.Option(False, "--no-download", help="Skip downloading files"),
-    no_parse: bool = typer.Option(False, "--no-parse", help="Skip parsing content")
+    no_parse: bool = typer.Option(False, "--no-parse", help="Skip parsing content"),
+    force: bool = typer.Option(False, "--force", "-f", help="Re-process already ingested documents")
 ):
     """
     Ingest circulars and press releases from BSE/NSE.
 
     This command fetches, downloads, and processes regulatory filings
     and press releases for storage in the RAG system.
+
+    By default, already-ingested documents are skipped. Use --force to re-process them.
     """
     from .pipelines.ingestion_orchestrator import IngestionOrchestrator
     from rich.progress import BarColumn, TaskProgressColumn
@@ -363,11 +366,12 @@ def ingest(
                 days_back=days,
                 download=not no_download,
                 parse=not no_parse,
+                skip_existing=not force,
                 progress_callback=progress_callback
             )
 
             console.print(f"\n[green]Circular Ingestion Complete![/green]")
-            console.print(f"  • Documents found: {result.job.documents_found}")
+            console.print(f"  • New documents: {result.job.documents_found}")
             console.print(f"  • Processed: {result.job.documents_processed}")
             console.print(f"  • Failed: {result.job.documents_failed}")
             console.print(f"  • Chunks generated: {result.chunks_generated}")
@@ -379,11 +383,12 @@ def ingest(
                 ticker=ticker,
                 days_back=days,
                 fetch_content=not no_parse,
+                skip_existing=not force,
                 progress_callback=progress_callback
             )
 
             console.print(f"\n[green]Press Release Ingestion Complete![/green]")
-            console.print(f"  • Documents found: {result.job.documents_found}")
+            console.print(f"  • New documents: {result.job.documents_found}")
             console.print(f"  • Processed: {result.job.documents_processed}")
             console.print(f"  • Failed: {result.job.documents_failed}")
             console.print(f"  • Chunks generated: {result.chunks_generated}")

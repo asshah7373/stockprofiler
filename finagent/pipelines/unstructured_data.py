@@ -1266,6 +1266,48 @@ class CircularPipeline:
 
         return dict(row) if row else None
 
+    def document_exists(self, doc_id: str) -> bool:
+        """Check if a document already exists in the database."""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute("SELECT 1 FROM circulars WHERE id = ?", (doc_id,))
+        exists = cursor.fetchone() is not None
+        conn.close()
+        return exists
+
+    def is_document_processed(self, doc_id: str) -> bool:
+        """Check if a document exists and has been processed (downloaded + parsed)."""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT is_processed FROM circulars WHERE id = ? AND is_processed = 1",
+            (doc_id,)
+        )
+        processed = cursor.fetchone() is not None
+        conn.close()
+        return processed
+
+    def get_existing_doc_ids(self) -> set:
+        """Get set of all existing document IDs."""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute("SELECT id FROM circulars")
+        ids = {row[0] for row in cursor.fetchall()}
+        conn.close()
+        return ids
+
+    def filter_new_documents(
+        self,
+        documents: List[CircularDocument]
+    ) -> List[CircularDocument]:
+        """Filter out documents that already exist in the database."""
+        existing_ids = self.get_existing_doc_ids()
+        new_docs = [doc for doc in documents if doc.id not in existing_ids]
+        skipped = len(documents) - len(new_docs)
+        if skipped > 0:
+            self.logger.info(f"Skipped {skipped} already-ingested documents")
+        return new_docs
+
     def get_unprocessed_documents(self, limit: int = 50) -> List[Dict]:
         """Get documents that haven't been processed yet."""
         conn = sqlite3.connect(self.db_path)

@@ -194,6 +194,7 @@ class IngestionOrchestrator:
         days_back: int = 7,
         download: bool = True,
         parse: bool = True,
+        skip_existing: bool = True,
         progress_callback: Optional[Callable[[int, int, str], None]] = None
     ) -> IngestionResult:
         """
@@ -205,6 +206,7 @@ class IngestionOrchestrator:
             days_back: Number of days to look back
             download: Whether to download document files
             parse: Whether to parse document content
+            skip_existing: Skip documents already in database (default: True)
             progress_callback: Callback(current, total, message)
 
         Returns:
@@ -240,10 +242,19 @@ class IngestionOrchestrator:
                 days_back=days_back
             )
 
+            total_found = len(circulars)
+
+            # Filter out already-ingested documents
+            if skip_existing:
+                circulars = self.circular_pipeline.filter_new_documents(circulars)
+                skipped = total_found - len(circulars)
+                if skipped > 0:
+                    self.logger.info(f"Skipped {skipped} already-ingested circulars")
+
             job.documents_found = len(circulars)
             self._save_job(job)
 
-            self.logger.info(f"Found {len(circulars)} circulars to process")
+            self.logger.info(f"Found {len(circulars)} new circulars to process (total: {total_found})")
 
             if progress_callback:
                 progress_callback(0, len(circulars), f"Processing {len(circulars)} documents...")
@@ -302,6 +313,7 @@ class IngestionOrchestrator:
         ticker: Optional[str] = None,
         days_back: int = 30,
         fetch_content: bool = True,
+        skip_existing: bool = True,
         progress_callback: Optional[Callable[[int, int, str], None]] = None
     ) -> IngestionResult:
         """
@@ -311,6 +323,7 @@ class IngestionOrchestrator:
             ticker: Optional ticker to filter
             days_back: Number of days to look back
             fetch_content: Whether to fetch full content
+            skip_existing: Skip press releases already in database (default: True)
             progress_callback: Callback(current, total, message)
 
         Returns:
@@ -343,10 +356,19 @@ class IngestionOrchestrator:
                 days_back=days_back
             )
 
+            total_found = len(releases)
+
+            # Filter out already-ingested press releases
+            if skip_existing:
+                releases = self.press_pipeline.filter_new_documents(releases)
+                skipped = total_found - len(releases)
+                if skipped > 0:
+                    self.logger.info(f"Skipped {skipped} already-ingested press releases")
+
             job.documents_found = len(releases)
             self._save_job(job)
 
-            self.logger.info(f"Found {len(releases)} press releases to process")
+            self.logger.info(f"Found {len(releases)} new press releases to process (total: {total_found})")
 
             if progress_callback:
                 progress_callback(0, len(releases), f"Processing {len(releases)} press releases...")

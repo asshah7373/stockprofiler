@@ -956,6 +956,36 @@ class PressReleasePipeline:
 
         return [dict(row) for row in rows]
 
+    def document_exists(self, doc_id: str) -> bool:
+        """Check if a press release already exists in the database."""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute("SELECT 1 FROM press_releases WHERE id = ?", (doc_id,))
+        exists = cursor.fetchone() is not None
+        conn.close()
+        return exists
+
+    def get_existing_doc_ids(self) -> set:
+        """Get set of all existing press release IDs."""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute("SELECT id FROM press_releases")
+        ids = {row[0] for row in cursor.fetchall()}
+        conn.close()
+        return ids
+
+    def filter_new_documents(
+        self,
+        releases: List[PressRelease]
+    ) -> List[PressRelease]:
+        """Filter out press releases that already exist in the database."""
+        existing_ids = self.get_existing_doc_ids()
+        new_releases = [pr for pr in releases if pr.id not in existing_ids]
+        skipped = len(releases) - len(new_releases)
+        if skipped > 0:
+            self.logger.info(f"Skipped {skipped} already-ingested press releases")
+        return new_releases
+
     def get_stats(self) -> Dict:
         """Get press release statistics."""
         conn = sqlite3.connect(self.db_path)
