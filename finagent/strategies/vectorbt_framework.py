@@ -672,8 +672,16 @@ class VectorBTFramework:
         gross_loss = abs(pf.trades.losing.pnl.sum()) if pf.trades.losing.count() > 0 else 1
         profit_factor = gross_profit / gross_loss if gross_loss > 0 else 0
 
-        # Average holding time
-        avg_holding = float(pf.trades.duration.mean().days) if total_trades > 0 else 0
+        # Average holding time (duration is in bar units for daily data = days)
+        if total_trades > 0:
+            duration_mean = pf.trades.duration.mean()
+            # Handle both timedelta and numeric types
+            if hasattr(duration_mean, 'days'):
+                avg_holding = float(duration_mean.days)
+            else:
+                avg_holding = float(duration_mean)  # Already in bar units (days)
+        else:
+            avg_holding = 0
 
         return StrategyResult(
             strategy_name=strategy_name,
