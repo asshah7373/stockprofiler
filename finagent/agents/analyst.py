@@ -429,6 +429,7 @@ FinAgent is a tool for educational and informational purposes only.
             else:
                 suitable_for = True
 
+        beta_str = f"{beta:.2f}" if beta is not None else "N/A"
         return {
             "beta": beta,
             "volatility": volatility,
@@ -437,7 +438,7 @@ FinAgent is a tool for educational and informational purposes only.
             "risk_level": risk_level,
             "risk_score": risk_score,
             "suitable_for_profile": suitable_for,
-            "reasoning": f"Risk level is {risk_level} based on beta ({beta:.2f if beta else 'N/A'}), market cap ({market_cap_category or 'N/A'}), and leverage."
+            "reasoning": f"Risk level is {risk_level} based on beta ({beta_str}), market cap ({market_cap_category or 'N/A'}), and leverage."
         }
 
     def _synthesize_conclusion(

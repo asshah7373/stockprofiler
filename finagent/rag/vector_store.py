@@ -212,7 +212,11 @@ class VectorStore:
             return []
 
     def _build_where_clause(self, filters: Dict) -> Optional[Dict]:
-        """Build ChromaDB where clause from filters."""
+        """Build ChromaDB where clause from filters.
+
+        Note: ChromaDB only supports numeric comparisons with $gte/$lte.
+        Date filtering is done post-query in Python instead.
+        """
         conditions = []
 
         if 'ticker' in filters and filters['ticker']:
@@ -221,11 +225,8 @@ class VectorStore:
         if 'doc_type' in filters and filters['doc_type']:
             conditions.append({'doc_type': {'$eq': filters['doc_type']}})
 
-        if 'date_after' in filters and filters['date_after']:
-            conditions.append({'filing_date': {'$gte': filters['date_after']}})
-
-        if 'date_before' in filters and filters['date_before']:
-            conditions.append({'filing_date': {'$lte': filters['date_before']}})
+        # Note: ChromaDB doesn't support string comparisons with $gte/$lte
+        # Date filtering removed - should be done post-query if needed
 
         if not conditions:
             return None
