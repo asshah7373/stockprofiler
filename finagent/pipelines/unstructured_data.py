@@ -477,10 +477,13 @@ class CircularPipeline:
                             except ValueError:
                                 filing_date = broadcast_dt
 
-                        # Get attachment URL
+                        # Get attachment URL - validate it's not empty or placeholder
                         attachment = item.get('attchmntFile', '') or item.get('attachment', '')
-                        if attachment and not attachment.startswith('http'):
+                        # Skip invalid attachment values like '-' or empty
+                        if attachment and attachment != '-' and not attachment.startswith('http'):
                             attachment = f"https://www.nseindia.com/api/corporate-announcements/download?fileName={attachment}"
+                        elif attachment == '-' or not attachment:
+                            attachment = ''  # No valid attachment
 
                         # Determine document type
                         subject = item.get('desc', '') or item.get('subject', '')

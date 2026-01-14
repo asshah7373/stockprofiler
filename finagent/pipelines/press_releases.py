@@ -392,10 +392,13 @@ class PressReleasePipeline:
                                 release_date = broadcast_dt
 
                         attachment = item.get('attchmntFile', '')
-                        if attachment and not attachment.startswith('http'):
+                        # Skip invalid attachment values like '-' or empty
+                        if attachment and attachment != '-' and not attachment.startswith('http'):
                             url = f"https://www.nseindia.com/api/corporate-announcements/download?fileName={attachment}"
-                        else:
+                        elif attachment and attachment != '-' and attachment.startswith('http'):
                             url = attachment
+                        else:
+                            url = ''  # No valid attachment
 
                         title = item.get('desc', '') or item.get('subject', '')
 
