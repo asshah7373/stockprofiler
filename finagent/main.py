@@ -242,15 +242,58 @@ def analyze(
 @app.command()
 def suggest(
     count: int = typer.Option(5, "--count", "-n", help="Number of suggestions"),
-    sector: Optional[str] = typer.Option(None, "--sector", "-s", help="Filter by sector")
+    sector: Optional[str] = typer.Option(None, "--sector", "-s", help="Filter by sector (IT, BANKING, PHARMA, AUTO, FMCG, INFRA, METALS, OIL_GAS, TELECOM)"),
+    horizon: str = typer.Option("1w", "--horizon", "-h", help="Time horizon (intraday, 1d, 1w, 1m, 3m, 1y)"),
+    commodity: Optional[str] = typer.Option(None, "--commodity", "-c", help="Commodity play (gold, oil, steel, copper, agriculture)"),
+    min_score: float = typer.Option(20.0, "--min-score", help="Minimum recommendation score (0-100)")
 ):
     """
-    Generate top N stock recommendations based on profile.
+    Generate stock recommendations based on news catalysts and time horizon.
+
+    Analyzes ingested news/announcements to find stocks with positive catalysts:
+    - Contract wins
+    - Product launches
+    - Strong results
+    - Regulatory approvals
+    - Strategic partnerships
+    - And more...
+
+    Examples:
+        finagent suggest --horizon intraday     # Today's opportunities
+        finagent suggest --horizon 1w -n 10     # Weekly picks
+        finagent suggest --commodity gold       # Gold price beneficiaries
+        finagent suggest --sector PHARMA        # Pharma sector only
     """
+    from .analysis.news_screener import NewsScreener, TimeHorizon
+    from rich.table import Table
+
+    # Map horizon string to enum
+    horizon_map = {
+        'intraday': TimeHorizon.INTRADAY,
+        '1d': TimeHorizon.SHORT,
+        '1w': TimeHorizon.WEEKLY,
+        '1m': TimeHorizon.MONTHLY,
+        '3m': TimeHorizon.QUARTERLY,
+        '1y': TimeHorizon.LONG,
+    }
+
+    time_horizon = horizon_map.get(horizon.lower(), TimeHorizon.WEEKLY)
+
+    horizon_display = {
+        TimeHorizon.INTRADAY: "Intraday (same day)",
+        TimeHorizon.SHORT: "Short-term (1 day)",
+        TimeHorizon.WEEKLY: "Weekly (1 week)",
+        TimeHorizon.MONTHLY: "Monthly (1 month)",
+        TimeHorizon.QUARTERLY: "Quarterly (3 months)",
+        TimeHorizon.LONG: "Long-term (1 year+)",
+    }
+
     console.print(Panel(
-        f"[bold cyan]Stock Suggestions[/bold cyan]\n\n"
-        f"Generating top {count} recommendations" +
-        (f" for {sector} sector" if sector else ""),
+        f"[bold cyan]News-Driven Stock Suggestions[/bold cyan]\n\n"
+        f"Time Horizon: {horizon_display.get(time_horizon, horizon)}\n"
+        f"Count: {count}" +
+        (f"\nSector: {sector.upper()}" if sector else "") +
+        (f"\nCommodity Play: {commodity}" if commodity else ""),
         title="FinAgent"
     ))
 
@@ -258,35 +301,112 @@ def suggest(
     profiler = RiskProfiler()
     profile = profiler.get_latest_profile()
 
-    if not profile:
-        console.print("[red]Error: No risk profile found.[/red]")
-        console.print("Please run 'finagent profile' first to create a risk profile.")
+    if profile:
+        console.print(f"\nUsing profile: [bold]{profile.risk_category}[/bold] (ID: {profile.profile_id[:8]}...)")
+    else:
+        console.print("\n[yellow]Note: No risk profile. Run 'finagent profile' for personalized recommendations.[/yellow]")
+
+    # Initialize screener
+    screener = NewsScreener()
+
+    # Check data availability
+    summary = screener.get_screening_summary()
+    if summary['total_documents'] == 0:
+        console.print("\n[red]No news data available for screening.[/red]")
+        console.print("Run 'finagent ingest --days 7' first to fetch recent announcements.")
         raise typer.Exit(1)
 
-    console.print(f"\nUsing profile: {profile.risk_category} (ID: {profile.profile_id[:8]}...)")
-    console.print("\n[yellow]Note: Stock suggestions feature requires market screening data.[/yellow]")
-    console.print("Consider running 'finagent analyze <ticker>' for specific stocks.\n")
+    console.print(f"\n[dim]Analyzing {summary['total_documents']} documents...[/dim]")
 
-    # Sector tickers for demonstration
-    sector_tickers = {
-        'IT': ['TCS.NS', 'INFY.NS', 'WIPRO.NS', 'HCLTECH.NS', 'TECHM.NS'],
-        'BANKING': ['HDFCBANK.NS', 'ICICIBANK.NS', 'SBIN.NS', 'KOTAKBANK.NS', 'AXISBANK.NS'],
-        'PHARMA': ['SUNPHARMA.NS', 'DRREDDY.NS', 'CIPLA.NS', 'DIVISLAB.NS'],
-        'AUTO': ['MARUTI.NS', 'TATAMOTORS.NS', 'M&M.NS', 'BAJAJ-AUTO.NS'],
-        'FMCG': ['HINDUNILVR.NS', 'ITC.NS', 'NESTLEIND.NS', 'BRITANNIA.NS']
-    }
+    # Handle commodity play request
+    if commodity:
+        console.print(f"\n[bold]Stocks benefiting from {commodity.upper()} price movement:[/bold]\n")
+        commodity_stocks = screener.get_commodity_plays(commodity, trend="bullish")
 
-    if sector and sector.upper() in sector_tickers:
-        suggestions = sector_tickers[sector.upper()][:count]
-    else:
-        # Mix of sectors
-        suggestions = ['RELIANCE.NS', 'TCS.NS', 'HDFCBANK.NS', 'INFY.NS', 'ICICIBANK.NS'][:count]
+        if not commodity_stocks:
+            console.print(f"[yellow]No {commodity}-related stocks found in recent news.[/yellow]")
+        else:
+            for i, stock in enumerate(commodity_stocks[:count], 1):
+                console.print(f"  {i}. [bold]{stock['ticker']}[/bold] - {stock['company_name']}")
+                console.print(f"     [dim]{stock['headline'][:80]}...[/dim]")
 
-    console.print(f"Suggested tickers for analysis:")
-    for i, ticker in enumerate(suggestions, 1):
-        console.print(f"  {i}. {ticker}")
+        console.print(f"\n[dim]Run 'finagent analyze <ticker>' for detailed analysis.[/dim]")
+        return
 
-    console.print(f"\nRun 'finagent analyze <ticker>' to get detailed analysis.")
+    # Get news-based recommendations
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        console=console
+    ) as progress:
+        task = progress.add_task("Screening for catalysts...", total=None)
+        recommendations = screener.screen_stocks(
+            time_horizon=time_horizon,
+            sector=sector.upper() if sector else None,
+            min_confidence=0.4,
+            limit=count
+        )
+        progress.update(task, description="[green]Screening complete[/green]")
+
+    if not recommendations:
+        console.print("\n[yellow]No strong recommendations found for the given criteria.[/yellow]")
+        console.print("Try:")
+        console.print("  - Different time horizon (--horizon 1m)")
+        console.print("  - Removing sector filter")
+        console.print("  - Running 'finagent ingest' to fetch more data")
+
+        # Fallback to popular stocks
+        console.print("\n[bold]Popular stocks for manual analysis:[/bold]")
+        fallback = ['RELIANCE.NS', 'TCS.NS', 'HDFCBANK.NS', 'INFY.NS', 'ICICIBANK.NS'][:count]
+        for i, ticker in enumerate(fallback, 1):
+            console.print(f"  {i}. {ticker}")
+        return
+
+    # Display recommendations
+    console.print(f"\n[bold green]Top {len(recommendations)} Recommendations ({horizon_display.get(time_horizon, horizon)}):[/bold green]\n")
+
+    table = Table(show_header=True, header_style="bold cyan")
+    table.add_column("#", style="dim", width=3)
+    table.add_column("Ticker", style="bold")
+    table.add_column("Company", width=25)
+    table.add_column("Score", justify="right")
+    table.add_column("Risk", justify="center")
+    table.add_column("Catalysts", width=40)
+
+    for i, rec in enumerate(recommendations, 1):
+        # Format catalysts summary
+        catalyst_summary = []
+        for c in rec.catalysts[:2]:
+            cat_type = c.catalyst_type.value.replace('_', ' ').title()
+            catalyst_summary.append(cat_type)
+        catalyst_str = ", ".join(catalyst_summary) if catalyst_summary else "Multiple"
+
+        # Risk color
+        risk_color = {"LOW": "green", "MEDIUM": "yellow", "HIGH": "red"}.get(rec.risk_level, "white")
+
+        table.add_row(
+            str(i),
+            rec.ticker,
+            (rec.company_name[:23] + "..") if len(rec.company_name) > 25 else rec.company_name,
+            f"{rec.score:.1f}",
+            f"[{risk_color}]{rec.risk_level}[/{risk_color}]",
+            catalyst_str
+        )
+
+    console.print(table)
+
+    # Show detailed reasoning for top 3
+    console.print("\n[bold]Key Catalysts:[/bold]\n")
+    for rec in recommendations[:3]:
+        console.print(f"[bold]{rec.ticker}[/bold] ({rec.sector})")
+        console.print(f"  {rec.reasoning}")
+        if rec.catalysts:
+            for c in rec.catalysts[:2]:
+                headline = c.headline[:70] if len(c.headline) > 70 else c.headline
+                console.print(f"  - [dim]{headline}...[/dim]")
+        console.print()
+
+    console.print(f"[dim]Run 'finagent analyze <ticker>' for detailed analysis.[/dim]")
 
 
 @app.command()
