@@ -104,6 +104,64 @@ Profit Factor: {self.profit_factor:.2f}
 """
 
 
+class SignalAction(Enum):
+    """Trading signal actions."""
+    STRONG_BUY = "STRONG_BUY"
+    BUY = "BUY"
+    HOLD = "HOLD"
+    SELL = "SELL"
+    STRONG_SELL = "STRONG_SELL"
+
+
+@dataclass
+class ForecastSignal:
+    """Forward-looking trading signal based on current indicators."""
+    ticker: str
+    timestamp: str
+    action: SignalAction
+    confidence: float              # 0-100
+    current_price: float
+
+    # Target levels
+    entry_price: Optional[float] = None
+    stop_loss: Optional[float] = None
+    target_1: Optional[float] = None
+    target_2: Optional[float] = None
+
+    # Indicator values
+    rsi: float = 50.0
+    macd_histogram: float = 0.0
+    macd_signal: str = "NEUTRAL"
+    sma_trend: str = "NEUTRAL"
+    price_vs_sma: float = 0.0      # % above/below SMA
+
+    # Analysis
+    reasons: List[str] = field(default_factory=list)
+    risks: List[str] = field(default_factory=list)
+
+    def to_dict(self) -> Dict:
+        return {
+            'ticker': self.ticker,
+            'timestamp': self.timestamp,
+            'action': self.action.value,
+            'confidence': round(self.confidence, 1),
+            'current_price': round(self.current_price, 2),
+            'entry_price': round(self.entry_price, 2) if self.entry_price else None,
+            'stop_loss': round(self.stop_loss, 2) if self.stop_loss else None,
+            'target_1': round(self.target_1, 2) if self.target_1 else None,
+            'target_2': round(self.target_2, 2) if self.target_2 else None,
+            'indicators': {
+                'rsi': round(self.rsi, 1),
+                'macd_histogram': round(self.macd_histogram, 4),
+                'macd_signal': self.macd_signal,
+                'sma_trend': self.sma_trend,
+                'price_vs_sma': round(self.price_vs_sma, 2),
+            },
+            'reasons': self.reasons,
+            'risks': self.risks,
+        }
+
+
 class VectorBTFramework:
     """
     Vectorized backtesting framework using VectorBT.
@@ -885,3 +943,191 @@ RECENT TRADES
 ================================================================================
 """
         return report
+
+    # =========================================================================
+    # Forward-Looking Signals (Forecast)
+    # =========================================================================
+
+    def generate_forecast(
+        self,
+        price_data: pd.DataFrame,
+        ticker: str = "UNKNOWN",
+        rsi_period: int = 14,
+        rsi_oversold: int = 30,
+        rsi_overbought: int = 70,
+        macd_fast: int = 12,
+        macd_slow: int = 26,
+        macd_signal: int = 9,
+        sma_period: int = 50,
+        stop_loss_pct: float = 0.05,
+        target_pct_1: float = 0.08,
+        target_pct_2: float = 0.15
+    ) -> ForecastSignal:
+        """
+        Generate forward-looking trading signal based on current market conditions.
+
+        Analyzes:
+        - RSI: Oversold/overbought conditions
+        - MACD: Momentum and crossover direction
+        - SMA: Trend direction
+        - Recent price action
+
+        Returns actionable ENTER/HOLD/EXIT signal with targets.
+        """
+        vbt = self._ensure_vectorbt()
+
+        close = price_data['close'] if 'close' in price_data.columns else price_data['Close']
+        close_arr = close.to_numpy()
+        current_price = float(close_arr[-1])
+
+        # Calculate indicators
+        rsi_values = vbt.RSI.run(close, window=rsi_period).rsi.to_numpy()
+        current_rsi = float(rsi_values[-1])
+        prev_rsi = float(rsi_values[-2]) if len(rsi_values) > 1 else current_rsi
+
+        macd_result = vbt.MACD.run(close, fast_window=macd_fast, slow_window=macd_slow, signal_window=macd_signal)
+        macd_hist = macd_result.hist.to_numpy()
+        current_macd = float(macd_hist[-1])
+        prev_macd = float(macd_hist[-2]) if len(macd_hist) > 1 else current_macd
+
+        sma_values = vbt.MA.run(close, window=sma_period).ma.to_numpy()
+        current_sma = float(sma_values[-1])
+        price_vs_sma_pct = ((current_price - current_sma) / current_sma) * 100
+
+        # Determine MACD signal
+        macd_bullish_cross = prev_macd <= 0 and current_macd > 0
+        macd_bearish_cross = prev_macd >= 0 and current_macd < 0
+        macd_improving = current_macd > prev_macd
+
+        if macd_bullish_cross:
+            macd_signal_str = "BULLISH_CROSS"
+        elif macd_bearish_cross:
+            macd_signal_str = "BEARISH_CROSS"
+        elif current_macd > 0 and macd_improving:
+            macd_signal_str = "BULLISH"
+        elif current_macd < 0 and not macd_improving:
+            macd_signal_str = "BEARISH"
+        else:
+            macd_signal_str = "NEUTRAL"
+
+        # Determine SMA trend
+        sma_short = np.mean(close_arr[-10:])
+        sma_mid = np.mean(close_arr[-30:]) if len(close_arr) >= 30 else sma_short
+        if sma_short > sma_mid * 1.02:
+            sma_trend = "UPTREND"
+        elif sma_short < sma_mid * 0.98:
+            sma_trend = "DOWNTREND"
+        else:
+            sma_trend = "SIDEWAYS"
+
+        # Score calculation
+        score = 0
+        reasons = []
+        risks = []
+
+        # RSI scoring
+        if current_rsi < rsi_oversold:
+            score += 30
+            reasons.append(f"RSI oversold ({current_rsi:.1f} < {rsi_oversold})")
+        elif current_rsi < 40:
+            score += 15
+            reasons.append(f"RSI approaching oversold ({current_rsi:.1f})")
+        elif current_rsi > rsi_overbought:
+            score -= 30
+            risks.append(f"RSI overbought ({current_rsi:.1f} > {rsi_overbought})")
+        elif current_rsi > 60:
+            score -= 10
+            risks.append(f"RSI elevated ({current_rsi:.1f})")
+
+        # RSI bounce detection
+        if prev_rsi < rsi_oversold and current_rsi >= rsi_oversold:
+            score += 20
+            reasons.append("RSI bouncing from oversold")
+
+        # MACD scoring
+        if macd_bullish_cross:
+            score += 25
+            reasons.append("MACD bullish crossover")
+        elif macd_bearish_cross:
+            score -= 25
+            risks.append("MACD bearish crossover")
+        elif current_macd > 0 and macd_improving:
+            score += 10
+            reasons.append("MACD positive and improving")
+        elif current_macd < 0 and not macd_improving:
+            score -= 10
+            risks.append("MACD negative and declining")
+
+        # SMA/Trend scoring
+        if sma_trend == "UPTREND":
+            score += 15
+            reasons.append(f"Price in uptrend (above SMA by {price_vs_sma_pct:.1f}%)")
+        elif sma_trend == "DOWNTREND":
+            score -= 15
+            risks.append(f"Price in downtrend (below SMA by {abs(price_vs_sma_pct):.1f}%)")
+
+        # Price momentum (last 5 days)
+        if len(close_arr) >= 5:
+            recent_return = (close_arr[-1] / close_arr[-5] - 1) * 100
+            if recent_return > 5:
+                score += 10
+                reasons.append(f"Strong recent momentum (+{recent_return:.1f}% in 5 days)")
+            elif recent_return < -5:
+                score -= 5
+                risks.append(f"Recent weakness ({recent_return:.1f}% in 5 days)")
+
+        # Determine action based on score
+        confidence = min(abs(score), 100)
+
+        if score >= 40:
+            action = SignalAction.STRONG_BUY
+            entry_price = current_price
+            stop_loss = current_price * (1 - stop_loss_pct)
+            target_1 = current_price * (1 + target_pct_1)
+            target_2 = current_price * (1 + target_pct_2)
+        elif score >= 20:
+            action = SignalAction.BUY
+            entry_price = current_price * 0.99  # Suggest slight dip entry
+            stop_loss = current_price * (1 - stop_loss_pct)
+            target_1 = current_price * (1 + target_pct_1)
+            target_2 = current_price * (1 + target_pct_2)
+        elif score <= -40:
+            action = SignalAction.STRONG_SELL
+            entry_price = None
+            stop_loss = None
+            target_1 = current_price * (1 - target_pct_1)  # Downside targets
+            target_2 = current_price * (1 - target_pct_2)
+            risks.append("Consider exiting positions")
+        elif score <= -20:
+            action = SignalAction.SELL
+            entry_price = None
+            stop_loss = None
+            target_1 = current_price * (1 - target_pct_1)
+            target_2 = current_price * (1 - target_pct_2)
+        else:
+            action = SignalAction.HOLD
+            entry_price = None
+            stop_loss = None
+            target_1 = None
+            target_2 = None
+            if not reasons:
+                reasons.append("Mixed signals - wait for clearer setup")
+
+        return ForecastSignal(
+            ticker=ticker,
+            timestamp=str(close.index[-1]),
+            action=action,
+            confidence=confidence,
+            current_price=current_price,
+            entry_price=entry_price,
+            stop_loss=stop_loss,
+            target_1=target_1,
+            target_2=target_2,
+            rsi=current_rsi,
+            macd_histogram=current_macd,
+            macd_signal=macd_signal_str,
+            sma_trend=sma_trend,
+            price_vs_sma=price_vs_sma_pct,
+            reasons=reasons,
+            risks=risks
+        )

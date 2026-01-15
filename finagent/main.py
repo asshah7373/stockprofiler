@@ -1431,6 +1431,173 @@ def backtest(
         raise typer.Exit(1)
 
 
+@app.command()
+def forecast(
+    ticker: str = typer.Argument(..., help="Stock ticker (e.g., RELIANCE.NS, INFY.NS)"),
+    days: int = typer.Option(180, "--days", "-d", help="Days of historical data for analysis"),
+    stop_loss: float = typer.Option(0.05, "--stop-loss", "-sl", help="Stop loss percentage (default: 5%)"),
+    target1: float = typer.Option(0.08, "--target1", "-t1", help="First target percentage (default: 8%)"),
+    target2: float = typer.Option(0.15, "--target2", "-t2", help="Second target percentage (default: 15%)"),
+    output_json: bool = typer.Option(False, "--json", "-j", help="Output as JSON")
+):
+    """
+    Generate forward-looking trading signal with ENTER/HOLD/EXIT recommendation.
+
+    Analyzes current market conditions using RSI, MACD, and SMA indicators
+    to provide actionable trading signals with entry points, stop loss, and targets.
+
+    Example:
+        finagent forecast INFY.NS
+        finagent forecast RELIANCE.NS --stop-loss 0.03 --target1 0.10
+    """
+    import yfinance as yf
+    from rich.panel import Panel
+    from rich.table import Table
+
+    console.print(Panel(
+        f"[bold cyan]Trading Forecast: {ticker}[/bold cyan]\n\n"
+        f"Analysis Period: {days} days\n"
+        f"Stop Loss: {stop_loss*100:.1f}%\n"
+        f"Target 1: {target1*100:.1f}% | Target 2: {target2*100:.1f}%",
+        title="FinAgent Forecast"
+    ))
+
+    try:
+        from .strategies.vectorbt_framework import VectorBTFramework, SignalAction
+
+        # Fetch data
+        with Progress(SpinnerColumn(), TextColumn("[progress.description]{task.description}"), console=console) as progress:
+            task = progress.add_task("Fetching price data...", total=None)
+
+            stock = yf.Ticker(ticker)
+            df = stock.history(period=f"{days}d")
+
+            if len(df) < 50:
+                console.print(f"[red]Error: Insufficient data for {ticker}. Got {len(df)} days, need at least 50.[/red]")
+                raise typer.Exit(1)
+
+            progress.update(task, description=f"Loaded {len(df)} days of data")
+
+            # Generate forecast
+            progress.update(task, description="Analyzing indicators...")
+            framework = VectorBTFramework()
+            signal = framework.generate_forecast(
+                df,
+                ticker=ticker,
+                stop_loss_pct=stop_loss,
+                target_pct_1=target1,
+                target_pct_2=target2
+            )
+            progress.update(task, description="[green]Analysis complete[/green]")
+
+        if output_json:
+            import json
+            console.print(json.dumps(signal.to_dict(), indent=2))
+            return
+
+        # Display signal
+        action_colors = {
+            SignalAction.STRONG_BUY: "bold green",
+            SignalAction.BUY: "green",
+            SignalAction.HOLD: "yellow",
+            SignalAction.SELL: "red",
+            SignalAction.STRONG_SELL: "bold red"
+        }
+
+        action_emoji = {
+            SignalAction.STRONG_BUY: "BUY",
+            SignalAction.BUY: "BUY",
+            SignalAction.HOLD: "HOLD",
+            SignalAction.SELL: "SELL",
+            SignalAction.STRONG_SELL: "SELL"
+        }
+
+        color = action_colors.get(signal.action, "white")
+
+        console.print(f"\n[bold]Signal: [{color}]{signal.action.value}[/{color}][/bold]")
+        console.print(f"Confidence: {signal.confidence:.0f}%")
+        console.print(f"Current Price: ₹{signal.current_price:,.2f}")
+        console.print(f"As of: {signal.timestamp}")
+
+        # Price Targets Table
+        if signal.action in [SignalAction.STRONG_BUY, SignalAction.BUY]:
+            console.print(f"\n[bold green]Entry/Exit Levels:[/bold green]")
+            table = Table(show_header=True, header_style="bold")
+            table.add_column("Level", style="cyan")
+            table.add_column("Price", justify="right")
+            table.add_column("% Move", justify="right")
+
+            if signal.entry_price:
+                entry_pct = ((signal.entry_price / signal.current_price) - 1) * 100
+                table.add_row("Entry", f"₹{signal.entry_price:,.2f}", f"{entry_pct:+.1f}%")
+            if signal.stop_loss:
+                sl_pct = ((signal.stop_loss / signal.current_price) - 1) * 100
+                table.add_row("Stop Loss", f"₹{signal.stop_loss:,.2f}", f"[red]{sl_pct:+.1f}%[/red]")
+            if signal.target_1:
+                t1_pct = ((signal.target_1 / signal.current_price) - 1) * 100
+                table.add_row("Target 1", f"₹{signal.target_1:,.2f}", f"[green]+{t1_pct:.1f}%[/green]")
+            if signal.target_2:
+                t2_pct = ((signal.target_2 / signal.current_price) - 1) * 100
+                table.add_row("Target 2", f"₹{signal.target_2:,.2f}", f"[green]+{t2_pct:.1f}%[/green]")
+
+            console.print(table)
+
+        elif signal.action in [SignalAction.STRONG_SELL, SignalAction.SELL]:
+            console.print(f"\n[bold red]Downside Targets:[/bold red]")
+            if signal.target_1:
+                t1_pct = ((signal.target_1 / signal.current_price) - 1) * 100
+                console.print(f"  Support 1: ₹{signal.target_1:,.2f} ({t1_pct:+.1f}%)")
+            if signal.target_2:
+                t2_pct = ((signal.target_2 / signal.current_price) - 1) * 100
+                console.print(f"  Support 2: ₹{signal.target_2:,.2f} ({t2_pct:+.1f}%)")
+
+        # Indicators Table
+        console.print(f"\n[bold]Technical Indicators:[/bold]")
+        ind_table = Table(show_header=True, header_style="bold")
+        ind_table.add_column("Indicator")
+        ind_table.add_column("Value", justify="right")
+        ind_table.add_column("Signal")
+
+        # RSI
+        rsi_color = "green" if signal.rsi < 30 else ("red" if signal.rsi > 70 else "yellow")
+        rsi_signal = "Oversold" if signal.rsi < 30 else ("Overbought" if signal.rsi > 70 else "Neutral")
+        ind_table.add_row("RSI (14)", f"{signal.rsi:.1f}", f"[{rsi_color}]{rsi_signal}[/{rsi_color}]")
+
+        # MACD
+        macd_color = "green" if "BULLISH" in signal.macd_signal else ("red" if "BEARISH" in signal.macd_signal else "yellow")
+        ind_table.add_row("MACD", f"{signal.macd_histogram:.4f}", f"[{macd_color}]{signal.macd_signal}[/{macd_color}]")
+
+        # Trend
+        trend_color = "green" if signal.sma_trend == "UPTREND" else ("red" if signal.sma_trend == "DOWNTREND" else "yellow")
+        ind_table.add_row("Trend (SMA50)", f"{signal.price_vs_sma:+.1f}%", f"[{trend_color}]{signal.sma_trend}[/{trend_color}]")
+
+        console.print(ind_table)
+
+        # Reasons and Risks
+        if signal.reasons:
+            console.print(f"\n[bold green]Bullish Factors:[/bold green]")
+            for reason in signal.reasons:
+                console.print(f"  [green]+[/green] {reason}")
+
+        if signal.risks:
+            console.print(f"\n[bold red]Risk Factors:[/bold red]")
+            for risk in signal.risks:
+                console.print(f"  [red]-[/red] {risk}")
+
+        # Disclaimer
+        console.print(f"\n[dim]Disclaimer: This is algorithmic analysis, not financial advice. Always do your own research.[/dim]")
+
+    except ImportError as e:
+        console.print(f"[red]Error: VectorBT not installed. Install with: pip install vectorbt[/red]")
+        console.print(f"[dim]Details: {e}[/dim]")
+        raise typer.Exit(1)
+    except Exception as e:
+        console.print(f"[red]Error: {e}[/red]")
+        import traceback
+        console.print(traceback.format_exc())
+        raise typer.Exit(1)
+
+
 @app.callback()
 def main(
     version: bool = typer.Option(False, "--version", "-V", help="Show version")
