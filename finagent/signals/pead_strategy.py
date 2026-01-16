@@ -199,19 +199,20 @@ class PEADStrategy:
 
         since_date = (datetime.now() - timedelta(days=days_back)).strftime('%Y-%m-%d')
 
-        # Query for quarterly results
+        # Query for quarterly results (using actual schema: title, description, parsed_text)
         query = """
             SELECT
-                ticker, company_name, filing_date, subject,
-                content, doc_type, exchange
+                ticker, company_name, filing_date, title,
+                description, parsed_text, doc_type, exchange
             FROM circulars
             WHERE filing_date >= ?
             AND (
-                LOWER(subject) LIKE '%quarterly%'
-                OR LOWER(subject) LIKE '%results%'
-                OR LOWER(subject) LIKE '%quarter%'
-                OR LOWER(subject) LIKE '%financial%'
+                LOWER(title) LIKE '%quarterly%'
+                OR LOWER(title) LIKE '%results%'
+                OR LOWER(title) LIKE '%quarter%'
+                OR LOWER(title) LIKE '%financial%'
                 OR LOWER(doc_type) LIKE '%result%'
+                OR LOWER(category) LIKE '%result%'
             )
         """
         params = [since_date]
@@ -234,14 +235,15 @@ class PEADStrategy:
 
         Extracts key metrics like revenue, profit, EPS from announcement text.
         """
-        content = filing.get('content', '') or ''
-        subject = filing.get('subject', '') or ''
+        # Use parsed_text or description as content
+        content = filing.get('parsed_text', '') or filing.get('description', '') or ''
+        title = filing.get('title', '') or ''
 
         data = {
             'ticker': filing.get('ticker'),
             'company_name': filing.get('company_name'),
             'announcement_date': filing.get('filing_date'),
-            'quarter': self._extract_quarter(subject + ' ' + content),
+            'quarter': self._extract_quarter(title + ' ' + content),
             'revenue': None,
             'revenue_yoy': None,
             'net_profit': None,
