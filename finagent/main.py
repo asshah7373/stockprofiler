@@ -1601,7 +1601,7 @@ def forecast(
 @app.command()
 def pead(
     ticker: Optional[str] = typer.Argument(None, help="Stock ticker (optional, shows all if not specified)"),
-    days: int = typer.Option(60, "--days", "-d", help="Days to look back for earnings"),
+    days: int = typer.Option(60, "--days", "-d", help="Days to look back for earnings (7-90)"),
     min_score: float = typer.Option(30.0, "--min-score", help="Minimum PEAD score (0-100)"),
     count: int = typer.Option(10, "--count", "-n", help="Number of results to show"),
     output_json: bool = typer.Option(False, "--json", "-j", help="Output as JSON")
@@ -1618,7 +1618,8 @@ def pead(
     - Scores opportunities by timing and surprise strength
 
     Examples:
-        finagent pead                    # Show all PEAD opportunities
+        finagent pead                    # Show all PEAD opportunities (60 days)
+        finagent pead --days 7           # Only last 7 days of earnings
         finagent pead RELIANCE           # Check specific stock
         finagent pead --min-score 50     # Only strong signals
     """
