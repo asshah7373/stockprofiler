@@ -1728,6 +1728,12 @@ def pead(
         # Disclaimer
         console.print(f"\n[dim]Note: PEAD is a statistical tendency, not a guarantee. Always do your own research.[/dim]")
 
+    except FileNotFoundError as e:
+        console.print(f"\n[yellow]No earnings data available.[/yellow]")
+        console.print(f"[dim]{e}[/dim]")
+        console.print("\nTo fetch earnings data, run:")
+        console.print("  [cyan]finagent ingest --days 60[/cyan]")
+        raise typer.Exit(1)
     except Exception as e:
         console.print(f"[red]Error: {e}[/red]")
         import traceback

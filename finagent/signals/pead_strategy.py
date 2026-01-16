@@ -154,12 +154,33 @@ class PEADStrategy:
 
     def __init__(self, db_path: Optional[str] = None):
         """Initialize PEAD strategy."""
-        self.db_path = db_path or str(Path.home() / ".finagent" / "circulars.db")
+        if db_path:
+            self.db_path = Path(db_path)
+        else:
+            # Try common locations for the circulars database
+            possible_paths = [
+                Path("data/cache/circulars.db"),
+                Path.home() / ".finagent" / "circulars.db",
+                Path(__file__).parent.parent / "data" / "cache" / "circulars.db",
+            ]
+            self.db_path = None
+            for p in possible_paths:
+                if p.exists():
+                    self.db_path = p
+                    break
+            if self.db_path is None:
+                self.db_path = Path("data/cache/circulars.db")  # Default
+
         self.logger = logging.getLogger(__name__)
 
     def _get_db_connection(self) -> sqlite3.Connection:
         """Get database connection."""
-        conn = sqlite3.connect(self.db_path)
+        if not self.db_path.exists():
+            raise FileNotFoundError(
+                f"Database not found at {self.db_path}. "
+                "Run 'finagent ingest' first to fetch earnings data."
+            )
+        conn = sqlite3.connect(str(self.db_path))
         conn.row_factory = sqlite3.Row
         return conn
 
