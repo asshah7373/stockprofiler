@@ -36,6 +36,7 @@ class SignalType(Enum):
     INSIDER = "insider"              # SAST filings
     NEWS = "news"                    # News sentiment
     CATALYST = "catalyst"            # Specific news events
+    PEAD = "pead"                    # Post-Earnings Announcement Drift
 
 
 class SignalStrength(Enum):

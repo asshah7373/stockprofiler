@@ -3,7 +3,8 @@ FinAgent Signals Module
 
 This module contains signal generation and combination:
 - SignalCombiner: Merges multiple signals into actionable recommendations
-- Signal types: Technical, Fundamental, Institutional, News-based
+- PEADStrategy: Post-Earnings Announcement Drift signals
+- Signal types: Technical, Fundamental, Institutional, News-based, PEAD
 """
 
 from .signal_combiner import (
@@ -14,10 +15,21 @@ from .signal_combiner import (
     CombinedRecommendation,
 )
 
+from .pead_strategy import (
+    PEADStrategy,
+    PEADSignal,
+    EarningsEvent,
+    EarningsSurprise,
+)
+
 __all__ = [
     "SignalCombiner",
     "Signal",
     "SignalType",
     "SignalStrength",
     "CombinedRecommendation",
+    "PEADStrategy",
+    "PEADSignal",
+    "EarningsEvent",
+    "EarningsSurprise",
 ]

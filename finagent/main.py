@@ -1598,6 +1598,143 @@ def forecast(
         raise typer.Exit(1)
 
 
+@app.command()
+def pead(
+    ticker: Optional[str] = typer.Argument(None, help="Stock ticker (optional, shows all if not specified)"),
+    days: int = typer.Option(60, "--days", "-d", help="Days to look back for earnings"),
+    min_score: float = typer.Option(30.0, "--min-score", help="Minimum PEAD score (0-100)"),
+    count: int = typer.Option(10, "--count", "-n", help="Number of results to show"),
+    output_json: bool = typer.Option(False, "--json", "-j", help="Output as JSON")
+):
+    """
+    Generate PEAD (Post-Earnings Announcement Drift) signals.
+
+    PEAD is a market anomaly where stocks continue to drift in the direction
+    of their earnings surprise for 30-60 days after the announcement.
+
+    The strategy:
+    - Identifies stocks with recent positive/negative earnings surprises
+    - Calculates expected drift based on surprise magnitude
+    - Scores opportunities by timing and surprise strength
+
+    Examples:
+        finagent pead                    # Show all PEAD opportunities
+        finagent pead RELIANCE           # Check specific stock
+        finagent pead --min-score 50     # Only strong signals
+    """
+    from rich.panel import Panel
+    from rich.table import Table
+    from .signals.pead_strategy import PEADStrategy, EarningsSurprise
+
+    console.print(Panel(
+        f"[bold cyan]PEAD Strategy Scanner[/bold cyan]\n\n"
+        f"Post-Earnings Announcement Drift Analysis\n"
+        f"Lookback: {days} days | Min Score: {min_score}",
+        title="FinAgent PEAD"
+    ))
+
+    try:
+        strategy = PEADStrategy()
+
+        with Progress(SpinnerColumn(), TextColumn("[progress.description]{task.description}"), console=console) as progress:
+            task = progress.add_task("Scanning earnings announcements...", total=None)
+
+            signals = strategy.generate_signals(
+                days_back=days,
+                min_score=min_score,
+                ticker=ticker
+            )
+            progress.update(task, description=f"[green]Found {len(signals)} opportunities[/green]")
+
+        if output_json:
+            import json
+            console.print(json.dumps([s.to_dict() for s in signals[:count]], indent=2))
+            return
+
+        if not signals:
+            console.print("\n[yellow]No PEAD opportunities found.[/yellow]")
+            console.print("[dim]Try lowering --min-score or run 'finagent ingest' to fetch more data.[/dim]")
+            return
+
+        # Summary
+        buy_signals = [s for s in signals if s.action == "BUY"]
+        sell_signals = [s for s in signals if s.action == "SELL"]
+
+        console.print(f"\n[bold]Summary:[/bold]")
+        console.print(f"  Total Signals: {len(signals)}")
+        console.print(f"  [green]Buy Signals: {len(buy_signals)}[/green]")
+        console.print(f"  [red]Sell/Avoid Signals: {len(sell_signals)}[/red]")
+
+        # Display signals table
+        table = Table(title=f"\nTop {min(count, len(signals))} PEAD Opportunities", show_header=True, header_style="bold")
+        table.add_column("Ticker", style="cyan", width=12)
+        table.add_column("Action", justify="center", width=8)
+        table.add_column("Score", justify="right", width=8)
+        table.add_column("Surprise", justify="right", width=10)
+        table.add_column("Days Ago", justify="right", width=10)
+        table.add_column("Window Left", justify="right", width=12)
+        table.add_column("Expected Drift", justify="right", width=14)
+
+        for signal in signals[:count]:
+            event = signal.earnings_event
+
+            # Action color
+            action_color = "green" if signal.action == "BUY" else "red"
+
+            # Surprise formatting
+            surprise_str = f"{event.surprise_magnitude:+.1f}%"
+            surprise_color = "green" if event.surprise_magnitude > 0 else "red"
+
+            # Drift formatting
+            drift_str = f"{signal.expected_drift:+.1f}%"
+            drift_color = "green" if signal.expected_drift > 0 else "red"
+
+            table.add_row(
+                event.ticker,
+                f"[{action_color}]{signal.action}[/{action_color}]",
+                f"{event.pead_score:.0f}",
+                f"[{surprise_color}]{surprise_str}[/{surprise_color}]",
+                str(event.days_since_announcement),
+                f"{event.drift_window_remaining}d",
+                f"[{drift_color}]{drift_str}[/{drift_color}]"
+            )
+
+        console.print(table)
+
+        # Show detailed view for top signal
+        if signals:
+            top = signals[0]
+            console.print(f"\n[bold]Top Opportunity: {top.ticker}[/bold]")
+            console.print(f"  Company: {top.company_name}")
+            console.print(f"  Quarter: {top.earnings_event.quarter}")
+            console.print(f"  Announced: {top.earnings_event.announcement_date.strftime('%Y-%m-%d')}")
+
+            if top.action == "BUY" and top.entry_price:
+                console.print(f"\n  [green]Suggested Entry:[/green] ₹{top.entry_price:,.2f}")
+                if top.stop_loss:
+                    console.print(f"  [red]Stop Loss:[/red] ₹{top.stop_loss:,.2f}")
+                if top.target_price:
+                    console.print(f"  [green]Target:[/green] ₹{top.target_price:,.2f}")
+                console.print(f"  [dim]Hold Period: ~{top.holding_period_days} days[/dim]")
+
+            console.print(f"\n  [bold green]Reasons:[/bold green]")
+            for reason in top.reasons:
+                console.print(f"    + {reason}")
+
+            console.print(f"\n  [bold red]Risks:[/bold red]")
+            for risk in top.risks:
+                console.print(f"    - {risk}")
+
+        # Disclaimer
+        console.print(f"\n[dim]Note: PEAD is a statistical tendency, not a guarantee. Always do your own research.[/dim]")
+
+    except Exception as e:
+        console.print(f"[red]Error: {e}[/red]")
+        import traceback
+        console.print(traceback.format_exc())
+        raise typer.Exit(1)
+
+
 @app.callback()
 def main(
     version: bool = typer.Option(False, "--version", "-V", help="Show version")
