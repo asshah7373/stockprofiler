@@ -1744,7 +1744,7 @@ def pead(
 
 @app.command()
 def scan(
-    universe: str = typer.Option("nifty50", "--universe", "-u", help="Stock universe (nifty50, nifty100, nifty200, fno, all, custom)"),
+    universe: str = typer.Option("nifty50", "--universe", "-u", help="Stock universe (nifty50, nifty100, nifty200, fno, midcap, all, comprehensive/nsebse, custom)"),
     hold_days: int = typer.Option(7, "--hold", "-h", help="Holding period in days"),
     min_confidence: float = typer.Option(40.0, "--min-confidence", "-c", help="Minimum signal confidence (0-100)"),
     count: int = typer.Option(20, "--count", "-n", help="Number of results to show"),
@@ -1781,7 +1781,9 @@ def scan(
     - nifty100: Top 100 stocks
     - nifty200: Top 200 stocks
     - fno: All F&O stocks (~200)
+    - midcap: Mid-cap and Small-cap NSE stocks (~400)
     - all: All major NSE stocks (~500)
+    - comprehensive/nsebse: All NSE + BSE stocks (~1500+)
     - custom: Use --file to provide your own list
 
     Examples:
@@ -1796,7 +1798,8 @@ def scan(
     from .signals.advanced_signals import (
         AdvancedSignalGenerator, SignalDirection,
         NIFTY_50, NIFTY_NEXT_50, ALL_INDIAN_STOCKS,
-        NIFTY_200, FNO_STOCKS, BROAD_MARKET
+        NIFTY_200, FNO_STOCKS, BROAD_MARKET,
+        NSE_MIDCAP_SMALLCAP, ALL_NSE_BSE
     )
 
     # Select universe
@@ -1827,9 +1830,15 @@ def scan(
     elif universe.lower() == "fno":
         tickers = FNO_STOCKS
         universe_name = "F&O Stocks"
+    elif universe.lower() == "midcap":
+        tickers = NSE_MIDCAP_SMALLCAP
+        universe_name = "NSE Mid/Small Cap"
     elif universe.lower() == "all":
         tickers = BROAD_MARKET
         universe_name = "All NSE Stocks"
+    elif universe.lower() == "comprehensive" or universe.lower() == "nsebse":
+        tickers = ALL_NSE_BSE
+        universe_name = "All NSE + BSE Stocks"
     else:
         tickers = NIFTY_50
         universe_name = "Nifty 50"
