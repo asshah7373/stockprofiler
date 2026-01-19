@@ -1751,12 +1751,14 @@ def scan(
     direction: str = typer.Option("all", "--direction", "-d", help="Filter by direction (buy, sell, all)"),
     tickers_file: Optional[str] = typer.Option(None, "--file", "-f", help="File with tickers (one per line)"),
     ticker: Optional[str] = typer.Option(None, "--ticker", "-t", help="Scan single ticker"),
+    fundamentals: bool = typer.Option(True, "--fundamentals/--no-fundamentals", help="Include NSE circulars/news data"),
+    news_days: int = typer.Option(30, "--news-days", help="Days to look back for news/circulars"),
     output_json: bool = typer.Option(False, "--json", "-j", help="Output as JSON")
 ):
     """
-    Scan Indian stocks using advanced technical indicators.
+    Scan Indian stocks using advanced technical indicators + fundamental data.
 
-    Uses multiple indicators to find trading opportunities:
+    Technical Indicators:
     - MACD (trend momentum)
     - Williams %R Trend Exhaustion (tops/bottoms)
     - Williams VixFix (volatility bottoms)
@@ -1765,6 +1767,13 @@ def scan(
     - Supertrend (trailing stop levels)
     - RSI with Divergence (reversal detection)
     - Ichimoku Cloud (comprehensive analysis)
+
+    Fundamental Data (from NSE circulars & news):
+    - Corporate announcements and results
+    - Contract wins, expansion news
+    - Earnings surprises (PEAD signals)
+    - Dividends, buybacks, partnerships
+    - Rating changes and analyst views
 
     Stock Universes:
     - nifty50: Top 50 stocks by market cap
@@ -1775,12 +1784,11 @@ def scan(
     - custom: Use --file to provide your own list
 
     Examples:
-        finagent scan                           # Scan Nifty 50
+        finagent scan                           # Scan Nifty 50 with fundamentals
         finagent scan --universe all            # Scan all ~500 stocks
-        finagent scan --universe fno            # Scan F&O stocks
+        finagent scan --no-fundamentals         # Technical only (faster)
         finagent scan --ticker RELIANCE.NS      # Scan single stock
-        finagent scan --file my_stocks.txt      # Scan from file
-        finagent scan --hold 30                 # 30-day holding period
+        finagent scan --news-days 7             # Only recent news (7 days)
     """
     from rich.panel import Panel
     from rich.table import Table
@@ -1825,17 +1833,19 @@ def scan(
         tickers = NIFTY_50
         universe_name = "Nifty 50"
 
+    fund_status = f"[green]Enabled[/green] ({news_days}-day lookback)" if fundamentals else "[dim]Disabled[/dim]"
     console.print(Panel(
-        f"[bold cyan]Advanced Technical Scanner[/bold cyan]\n\n"
+        f"[bold cyan]Advanced Technical + Fundamental Scanner[/bold cyan]\n\n"
         f"Universe: {universe_name} ({len(tickers)} stocks)\n"
         f"Holding Period: {hold_days} days\n"
         f"Min Confidence: {min_confidence}%\n"
-        f"Direction Filter: {direction.upper()}",
+        f"Direction Filter: {direction.upper()}\n"
+        f"Fundamental Data: {fund_status}",
         title="FinAgent Scanner"
     ))
 
     try:
-        generator = AdvancedSignalGenerator()
+        generator = AdvancedSignalGenerator(use_fundamentals=fundamentals, days_lookback=news_days)
 
         signals = []
         with Progress(
@@ -1886,29 +1896,44 @@ def scan(
         table = Table(title=f"\nTop {min(count, len(signals))} Opportunities", show_header=True, header_style="bold")
         table.add_column("Ticker", style="cyan", width=14)
         table.add_column("Signal", justify="center", width=12)
-        table.add_column("Conf", justify="right", width=6)
+        table.add_column("Tech", justify="right", width=5)
+        if fundamentals:
+            table.add_column("News", justify="center", width=8)
+            table.add_column("Score", justify="right", width=6)
         table.add_column("Price", justify="right", width=10)
-        table.add_column("Entry", justify="right", width=10)
-        table.add_column("Stop", justify="right", width=10)
         table.add_column("Target", justify="right", width=10)
         table.add_column("Exp.Ret", justify="right", width=8)
-        table.add_column("R:R", justify="right", width=6)
+        table.add_column("R:R", justify="right", width=5)
 
         for signal in signals[:count]:
             dir_color = "green" if signal.direction in [SignalDirection.STRONG_BUY, SignalDirection.BUY] else "red"
             dir_str = signal.direction.value.replace("_", " ")
 
-            table.add_row(
+            row = [
                 signal.ticker.replace(".NS", ""),
                 f"[{dir_color}]{dir_str}[/{dir_color}]",
                 f"{signal.confidence:.0f}%",
+            ]
+
+            if fundamentals:
+                # News sentiment
+                if signal.fundamental and signal.fundamental.has_recent_news:
+                    sentiment = signal.fundamental.news_sentiment
+                    sent_color = "green" if sentiment == "BULLISH" else ("red" if sentiment == "BEARISH" else "yellow")
+                    row.append(f"[{sent_color}]{sentiment[:4]}[/{sent_color}]")
+                else:
+                    row.append("[dim]--[/dim]")
+                # Combined score
+                row.append(f"{signal.combined_score:.0f}")
+
+            row.extend([
                 f"₹{signal.current_price:,.0f}",
-                f"₹{signal.entry_price:,.0f}",
-                f"₹{signal.stop_loss:,.0f}",
                 f"₹{signal.target_2:,.0f}",
                 f"[{dir_color}]{signal.expected_return_pct:+.1f}%[/{dir_color}]",
                 f"{signal.risk_reward_ratio:.1f}",
-            )
+            ])
+
+            table.add_row(*row)
 
         console.print(table)
 
@@ -1949,6 +1974,33 @@ def scan(
                 console.print(f"\n  [bold red]Risk Factors:[/bold red]")
                 for risk in top.risks[:5]:
                     console.print(f"    - {risk}")
+
+            # Fundamental data section
+            if fundamentals and top.fundamental and top.fundamental.has_recent_news:
+                console.print(f"\n  [bold magenta]Fundamental Data (from NSE Circulars/News):[/bold magenta]")
+
+                sentiment = top.fundamental.news_sentiment
+                sent_color = "green" if sentiment == "BULLISH" else ("red" if sentiment == "BEARISH" else "yellow")
+                console.print(f"    News Sentiment: [{sent_color}]{sentiment}[/{sent_color}] (score: {top.fundamental.news_score:+.0f})")
+
+                if top.fundamental.earnings_surprise:
+                    ear_color = "green" if top.fundamental.earnings_surprise == "BEAT" else ("red" if top.fundamental.earnings_surprise == "MISS" else "yellow")
+                    console.print(f"    Earnings: [{ear_color}]{top.fundamental.earnings_surprise}[/{ear_color}] (PEAD score: {top.fundamental.pead_score:+.0f})")
+
+                if top.fundamental.catalysts:
+                    console.print(f"\n    [bold]Recent Catalysts:[/bold]")
+                    for catalyst in top.fundamental.catalysts[:3]:
+                        cat_color = "green" if catalyst['sentiment'] == 'BULLISH' else "red"
+                        impact = catalyst.get('impact', 'MEDIUM')
+                        console.print(f"      [{cat_color}]{catalyst['type'].replace('_', ' ').title()}[/{cat_color}] [{impact}]")
+                        console.print(f"        {catalyst['headline'][:70]}...")
+
+                if top.fundamental.recent_headlines:
+                    console.print(f"\n    [bold]Recent Headlines:[/bold]")
+                    for headline in top.fundamental.recent_headlines[:3]:
+                        console.print(f"      • {headline[:80]}...")
+
+                console.print(f"\n    [dim]Combined Score (70% tech + 30% fundamental): {top.combined_score:.0f}[/dim]")
 
         # Disclaimer
         console.print(f"\n[dim]Disclaimer: Technical analysis is not financial advice. Always do your own research.[/dim]")

@@ -36,6 +36,29 @@ class SignalDirection(Enum):
 
 
 @dataclass
+class FundamentalData:
+    """Fundamental/news data for a stock."""
+    has_recent_news: bool = False
+    catalysts: List[Dict[str, Any]] = field(default_factory=list)
+    news_sentiment: str = "NEUTRAL"  # BULLISH, BEARISH, NEUTRAL
+    news_score: float = 0.0  # -100 to +100
+    earnings_surprise: Optional[str] = None  # BEAT, MISS, INLINE
+    pead_score: float = 0.0  # -100 to +100
+    recent_headlines: List[str] = field(default_factory=list)
+
+    def to_dict(self) -> Dict:
+        return {
+            'has_recent_news': self.has_recent_news,
+            'catalysts': self.catalysts,
+            'news_sentiment': self.news_sentiment,
+            'news_score': round(self.news_score, 1),
+            'earnings_surprise': self.earnings_surprise,
+            'pead_score': round(self.pead_score, 1),
+            'recent_headlines': self.recent_headlines[:3],
+        }
+
+
+@dataclass
 class TechnicalSignal:
     """Technical analysis signal."""
     ticker: str
@@ -65,12 +88,19 @@ class TechnicalSignal:
     reasons: List[str] = field(default_factory=list)
     risks: List[str] = field(default_factory=list)
 
+    # Fundamental data (optional)
+    fundamental: Optional[FundamentalData] = None
+
+    # Combined score (technical + fundamental)
+    combined_score: float = 0.0
+
     def to_dict(self) -> Dict:
-        return {
+        result = {
             'ticker': self.ticker,
             'timestamp': self.timestamp,
             'direction': self.direction.value,
             'confidence': round(self.confidence, 1),
+            'combined_score': round(self.combined_score, 1),
             'current_price': round(self.current_price, 2),
             'entry_price': round(self.entry_price, 2),
             'stop_loss': round(self.stop_loss, 2),
@@ -86,6 +116,9 @@ class TechnicalSignal:
             'reasons': self.reasons,
             'risks': self.risks,
         }
+        if self.fundamental:
+            result['fundamental'] = self.fundamental.to_dict()
+        return result
 
 
 class AdvancedIndicators:
@@ -786,17 +819,247 @@ class AdvancedIndicators:
         return self._ema(tr, period)
 
 
+class FundamentalEnhancer:
+    """
+    Enhances technical signals with fundamental data from:
+    - NSE/BSE circulars (earnings, board meetings, corporate actions)
+    - Press releases
+    - News catalysts
+    - PEAD (Post-Earnings Announcement Drift) signals
+    """
+
+    def __init__(self, circulars_db: str = None, days_lookback: int = 30):
+        self.logger = logging.getLogger(__name__)
+        self.days_lookback = days_lookback
+
+        # Find circulars database
+        self.circulars_db = self._find_database(circulars_db)
+        self._catalyst_cache: Dict[str, FundamentalData] = {}
+
+    def _find_database(self, db_path: Optional[str] = None) -> Optional[str]:
+        """Find the circulars database."""
+        from pathlib import Path
+
+        if db_path and Path(db_path).exists():
+            return db_path
+
+        # Try common locations
+        possible_paths = [
+            "data/cache/circulars.db",
+            "~/.finagent/circulars.db",
+            "./circulars.db",
+        ]
+
+        for path in possible_paths:
+            expanded = Path(path).expanduser()
+            if expanded.exists():
+                return str(expanded)
+
+        return None
+
+    def get_fundamental_data(self, ticker: str) -> FundamentalData:
+        """Get fundamental data for a ticker."""
+        # Check cache first
+        if ticker in self._catalyst_cache:
+            return self._catalyst_cache[ticker]
+
+        fundamental = FundamentalData()
+
+        if not self.circulars_db:
+            return fundamental
+
+        try:
+            import sqlite3
+            from datetime import datetime, timedelta
+
+            # Normalize ticker for database lookup
+            base_ticker = ticker.replace('.NS', '').replace('.BO', '').upper()
+            cutoff_date = (datetime.now() - timedelta(days=self.days_lookback)).isoformat()
+
+            conn = sqlite3.connect(self.circulars_db)
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+
+            # Fetch recent circulars for this ticker
+            sql = """
+                SELECT id, ticker, company_name, title, description,
+                       doc_type, category, filing_date, parsed_text
+                FROM circulars
+                WHERE (ticker LIKE ? OR company_name LIKE ?)
+                  AND filing_date >= ?
+                ORDER BY filing_date DESC
+                LIMIT 20
+            """
+            cursor.execute(sql, (f"%{base_ticker}%", f"%{base_ticker}%", cutoff_date))
+            rows = cursor.fetchall()
+            conn.close()
+
+            if rows:
+                fundamental.has_recent_news = True
+                catalysts = []
+                headlines = []
+                bullish_count = 0
+                bearish_count = 0
+
+                for row in rows:
+                    title = row['title'] or ''
+                    description = row['description'] or ''
+                    category = row['category'] or ''
+                    doc_type = row['doc_type'] or ''
+                    text = f"{title} {description}".lower()
+
+                    headlines.append(title[:100])
+
+                    # Detect catalyst type and sentiment
+                    catalyst_info = self._analyze_catalyst(title, description, category)
+                    if catalyst_info:
+                        catalysts.append(catalyst_info)
+
+                        if catalyst_info['sentiment'] == 'BULLISH':
+                            bullish_count += 1
+                        elif catalyst_info['sentiment'] == 'BEARISH':
+                            bearish_count += 1
+
+                    # Check for earnings
+                    if any(kw in text for kw in ['result', 'quarter', 'earning', 'profit', 'revenue']):
+                        fundamental.earnings_surprise = self._detect_earnings_surprise(text)
+                        if fundamental.earnings_surprise == 'BEAT':
+                            fundamental.pead_score = 30.0
+                        elif fundamental.earnings_surprise == 'MISS':
+                            fundamental.pead_score = -30.0
+
+                fundamental.catalysts = catalysts[:5]
+                fundamental.recent_headlines = headlines[:5]
+
+                # Calculate news sentiment and score
+                if bullish_count > bearish_count:
+                    fundamental.news_sentiment = 'BULLISH'
+                    fundamental.news_score = min((bullish_count - bearish_count) * 15, 50)
+                elif bearish_count > bullish_count:
+                    fundamental.news_sentiment = 'BEARISH'
+                    fundamental.news_score = max((bullish_count - bearish_count) * 15, -50)
+                else:
+                    fundamental.news_sentiment = 'NEUTRAL'
+                    fundamental.news_score = 0
+
+        except Exception as e:
+            self.logger.debug(f"Error fetching fundamental data for {ticker}: {e}")
+
+        # Cache result
+        self._catalyst_cache[ticker] = fundamental
+        return fundamental
+
+    def _analyze_catalyst(self, title: str, description: str, category: str) -> Optional[Dict]:
+        """Analyze a circular/news item for catalyst information."""
+        text = f"{title} {description}".lower()
+
+        # Bullish catalysts
+        bullish_patterns = {
+            'contract_win': ['contract', 'order', 'won', 'secured', 'awarded', 'bagged'],
+            'expansion': ['expansion', 'capacity', 'new plant', 'new facility', 'capex'],
+            'strong_results': ['profit up', 'revenue up', 'growth', 'beat', 'exceeded', 'record'],
+            'dividend': ['dividend', 'bonus', 'buyback'],
+            'partnership': ['partnership', 'alliance', 'tie-up', 'collaboration', 'joint venture'],
+            'approval': ['approval', 'clearance', 'license', 'patent'],
+            'upgrade': ['upgrade', 'rating', 'target raised'],
+            'acquisition': ['acquisition', 'acquire', 'merger'],
+        }
+
+        # Bearish catalysts
+        bearish_patterns = {
+            'loss': ['loss', 'decline', 'fell', 'dropped', 'missed', 'below'],
+            'downgrade': ['downgrade', 'cut', 'lowered', 'reduced'],
+            'penalty': ['penalty', 'fine', 'litigation', 'lawsuit'],
+            'fraud': ['fraud', 'scam', 'investigation', 'sebi notice'],
+            'management': ['resignation', 'stepped down', 'quit', 'exit'],
+        }
+
+        # Check for bullish catalysts
+        for catalyst_type, keywords in bullish_patterns.items():
+            if any(kw in text for kw in keywords):
+                return {
+                    'type': catalyst_type,
+                    'headline': title[:100],
+                    'sentiment': 'BULLISH',
+                    'impact': self._estimate_impact(catalyst_type, text),
+                }
+
+        # Check for bearish catalysts
+        for catalyst_type, keywords in bearish_patterns.items():
+            if any(kw in text for kw in keywords):
+                return {
+                    'type': catalyst_type,
+                    'headline': title[:100],
+                    'sentiment': 'BEARISH',
+                    'impact': self._estimate_impact(catalyst_type, text),
+                }
+
+        return None
+
+    def _estimate_impact(self, catalyst_type: str, text: str) -> str:
+        """Estimate impact level of a catalyst."""
+        high_impact = ['contract_win', 'acquisition', 'strong_results', 'fraud', 'loss']
+        medium_impact = ['expansion', 'dividend', 'partnership', 'approval', 'penalty']
+
+        # Check for value mentions (large values = higher impact)
+        import re
+        value_match = re.search(r'(\d+(?:,\d+)*(?:\.\d+)?)\s*(?:cr|crore|billion)', text)
+        if value_match:
+            try:
+                value = float(value_match.group(1).replace(',', ''))
+                if value > 500:  # > 500 crore
+                    return 'HIGH'
+                elif value > 100:
+                    return 'MEDIUM'
+            except ValueError:
+                pass
+
+        if catalyst_type in high_impact:
+            return 'HIGH'
+        elif catalyst_type in medium_impact:
+            return 'MEDIUM'
+        return 'LOW'
+
+    def _detect_earnings_surprise(self, text: str) -> str:
+        """Detect earnings surprise from text."""
+        text = text.lower()
+
+        beat_keywords = ['beat', 'exceeded', 'surpassed', 'above', 'strong', 'robust',
+                         'profit up', 'revenue up', 'growth', 'record', 'highest']
+        miss_keywords = ['missed', 'below', 'fell', 'declined', 'weak', 'disappointing',
+                         'profit down', 'revenue down', 'loss']
+
+        beat_count = sum(1 for kw in beat_keywords if kw in text)
+        miss_count = sum(1 for kw in miss_keywords if kw in text)
+
+        if beat_count > miss_count:
+            return 'BEAT'
+        elif miss_count > beat_count:
+            return 'MISS'
+        return 'INLINE'
+
+    def preload_fundamentals(self, tickers: List[str]):
+        """Preload fundamental data for multiple tickers."""
+        for ticker in tickers:
+            self.get_fundamental_data(ticker)
+
+
 class AdvancedSignalGenerator:
     """
     Generates combined signals from multiple indicators.
 
     Scans Indian stocks and provides buy/sell recommendations
     with profit targets based on holding period.
+
+    Optionally incorporates fundamental data from NSE circulars,
+    press releases, and news for enhanced signals.
     """
 
-    def __init__(self):
+    def __init__(self, use_fundamentals: bool = True, days_lookback: int = 30):
         self.indicators = AdvancedIndicators()
         self.logger = logging.getLogger(__name__)
+        self.use_fundamentals = use_fundamentals
+        self.fundamental_enhancer = FundamentalEnhancer(days_lookback=days_lookback) if use_fundamentals else None
 
     def analyze_stock(
         self,
@@ -985,6 +1248,46 @@ class AdvancedSignalGenerator:
         else:
             risks.append("Hull MA falling trend")
 
+        # Get fundamental data if enabled
+        fundamental = None
+        fundamental_score = 0.0
+
+        if self.use_fundamentals and self.fundamental_enhancer:
+            fundamental = self.fundamental_enhancer.get_fundamental_data(ticker)
+
+            if fundamental.has_recent_news:
+                # Add fundamental reasons/risks
+                if fundamental.news_sentiment == 'BULLISH':
+                    reasons.append(f"News sentiment: {fundamental.news_sentiment}")
+                    for catalyst in fundamental.catalysts[:2]:
+                        if catalyst['sentiment'] == 'BULLISH':
+                            reasons.append(f"{catalyst['type'].replace('_', ' ').title()}: {catalyst['headline'][:50]}...")
+                elif fundamental.news_sentiment == 'BEARISH':
+                    risks.append(f"News sentiment: {fundamental.news_sentiment}")
+                    for catalyst in fundamental.catalysts[:2]:
+                        if catalyst['sentiment'] == 'BEARISH':
+                            risks.append(f"{catalyst['type'].replace('_', ' ').title()}: {catalyst['headline'][:50]}...")
+
+                # Add earnings info if available
+                if fundamental.earnings_surprise == 'BEAT':
+                    reasons.append("Recent earnings beat (PEAD opportunity)")
+                elif fundamental.earnings_surprise == 'MISS':
+                    risks.append("Recent earnings miss")
+
+                # Calculate fundamental score
+                fundamental_score = fundamental.news_score + fundamental.pead_score
+
+        # Calculate combined score (70% technical, 30% fundamental)
+        technical_score = min(abs(avg_score), 100)
+        combined_score = (technical_score * 0.7) + (fundamental_score * 0.3)
+
+        # Boost confidence if technical and fundamental align
+        if fundamental and fundamental.has_recent_news:
+            if (avg_score > 0 and fundamental.news_sentiment == 'BULLISH'):
+                combined_score *= 1.15  # 15% boost for alignment
+            elif (avg_score < 0 and fundamental.news_sentiment == 'BEARISH'):
+                combined_score *= 1.15
+
         return TechnicalSignal(
             ticker=ticker,
             timestamp=str(datetime.now()),
@@ -1002,6 +1305,8 @@ class AdvancedSignalGenerator:
             indicators=signals,
             reasons=reasons,
             risks=risks,
+            fundamental=fundamental,
+            combined_score=min(combined_score, 100),
         )
 
     def scan_stocks(
@@ -1021,7 +1326,7 @@ class AdvancedSignalGenerator:
             progress_callback: Optional callback(current, total, ticker)
 
         Returns:
-            List of TechnicalSignal sorted by confidence
+            List of TechnicalSignal sorted by combined score (technical + fundamental)
         """
         import yfinance as yf
 
@@ -1049,8 +1354,11 @@ class AdvancedSignalGenerator:
                 self.logger.debug(f"Error scanning {ticker}: {e}")
                 continue
 
-        # Sort by confidence descending
-        signals.sort(key=lambda s: s.confidence, reverse=True)
+        # Sort by combined score (technical + fundamental) descending
+        if self.use_fundamentals:
+            signals.sort(key=lambda s: s.combined_score, reverse=True)
+        else:
+            signals.sort(key=lambda s: s.confidence, reverse=True)
 
         return signals
 
