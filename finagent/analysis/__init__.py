@@ -7,6 +7,7 @@ This module contains analysis components:
 - ChainOfThoughtSynthesizer: Structured reasoning engine
 - NewsScreener: News-based stock screening and catalyst detection
 - FinancialSentimentAnalyzer: NLP-based sentiment analysis (FinBERT/VADER)
+- LiveNewsFetcher: Real-time news fetching from Yahoo Finance and Google News
 """
 
 from .technical import TechnicalAnalyzer
@@ -18,6 +19,12 @@ from .sentiment_analyzer import (
     SentimentResult,
     SentimentLabel,
     analyze_sentiment,
+)
+from .live_news_fetcher import (
+    LiveNewsFetcher,
+    NewsItem,
+    fetch_live_news,
+    get_live_news_fetcher,
 )
 
 __all__ = [
@@ -32,4 +39,8 @@ __all__ = [
     "SentimentResult",
     "SentimentLabel",
     "analyze_sentiment",
+    "LiveNewsFetcher",
+    "NewsItem",
+    "fetch_live_news",
+    "get_live_news_fetcher",
 ]

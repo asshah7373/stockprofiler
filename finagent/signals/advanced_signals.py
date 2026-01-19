@@ -824,7 +824,8 @@ class AdvancedIndicators:
 class FundamentalEnhancer:
     """
     Enhances technical signals with fundamental data from:
-    - NSE/BSE circulars (earnings, board meetings, corporate actions)
+    - Live news from Yahoo Finance and Google News (default)
+    - NSE/BSE circulars database (if available)
     - Press releases
     - News catalysts
     - PEAD (Post-Earnings Announcement Drift) signals
@@ -833,14 +834,26 @@ class FundamentalEnhancer:
     falls back to keyword matching otherwise.
     """
 
-    def __init__(self, circulars_db: str = None, days_lookback: int = 30, use_nlp: bool = True):
+    def __init__(self, circulars_db: str = None, days_lookback: int = 30,
+                 use_nlp: bool = True, use_live_news: bool = True):
         self.logger = logging.getLogger(__name__)
         self.days_lookback = days_lookback
         self.use_nlp = use_nlp
+        self.use_live_news = use_live_news
 
         # Find circulars database
         self.circulars_db = self._find_database(circulars_db)
         self._catalyst_cache: Dict[str, FundamentalData] = {}
+
+        # Initialize live news fetcher
+        self.news_fetcher = None
+        if use_live_news:
+            try:
+                from ..analysis.live_news_fetcher import LiveNewsFetcher
+                self.news_fetcher = LiveNewsFetcher()
+                self.logger.info("Live news fetching enabled")
+            except ImportError as e:
+                self.logger.warning(f"Could not load live news fetcher: {e}")
 
         # Initialize sentiment analyzer
         self.sentiment_analyzer = None
@@ -875,125 +888,159 @@ class FundamentalEnhancer:
         return None
 
     def get_fundamental_data(self, ticker: str) -> FundamentalData:
-        """Get fundamental data for a ticker."""
+        """Get fundamental data for a ticker from database or live news."""
         # Check cache first
         if ticker in self._catalyst_cache:
             return self._catalyst_cache[ticker]
 
         fundamental = FundamentalData()
+        headlines = []
+        catalysts = []
+        bullish_count = 0
+        bearish_count = 0
 
-        if not self.circulars_db:
-            return fundamental
+        # Try live news first if enabled and no database
+        if self.use_live_news and self.news_fetcher and not self.circulars_db:
+            try:
+                news_items = self.news_fetcher.fetch_news(ticker, self.days_lookback)
 
-        try:
-            import sqlite3
-            from datetime import datetime, timedelta
+                if news_items:
+                    fundamental.has_recent_news = True
 
-            # Normalize ticker for database lookup
-            base_ticker = ticker.replace('.NS', '').replace('.BO', '').upper()
-            cutoff_date = (datetime.now() - timedelta(days=self.days_lookback)).isoformat()
+                    for item in news_items[:15]:  # Process up to 15 items
+                        title = item.title or ''
+                        description = item.description or ''
+                        text = f"{title} {description}".lower()
 
-            conn = sqlite3.connect(self.circulars_db)
-            conn.row_factory = sqlite3.Row
-            cursor = conn.cursor()
+                        headlines.append(title[:100])
 
-            # Fetch recent circulars for this ticker
-            sql = """
-                SELECT id, ticker, company_name, title, description,
-                       doc_type, category, filing_date, parsed_text
-                FROM circulars
-                WHERE (ticker LIKE ? OR company_name LIKE ?)
-                  AND filing_date >= ?
-                ORDER BY filing_date DESC
-                LIMIT 20
-            """
-            cursor.execute(sql, (f"%{base_ticker}%", f"%{base_ticker}%", cutoff_date))
-            rows = cursor.fetchall()
-            conn.close()
+                        # Detect catalyst type and sentiment
+                        catalyst_info = self._analyze_catalyst(title, description, '')
+                        if catalyst_info:
+                            catalysts.append(catalyst_info)
+                            if catalyst_info['sentiment'] == 'BULLISH':
+                                bullish_count += 1
+                            elif catalyst_info['sentiment'] == 'BEARISH':
+                                bearish_count += 1
 
-            if rows:
-                fundamental.has_recent_news = True
-                catalysts = []
-                headlines = []
-                bullish_count = 0
-                bearish_count = 0
+                        # Check for earnings
+                        if any(kw in text for kw in ['result', 'quarter', 'earning', 'profit', 'revenue']):
+                            fundamental.earnings_surprise = self._detect_earnings_surprise(text)
+                            if fundamental.earnings_surprise == 'BEAT':
+                                fundamental.pead_score = 30.0
+                            elif fundamental.earnings_surprise == 'MISS':
+                                fundamental.pead_score = -30.0
 
-                for row in rows:
-                    title = row['title'] or ''
-                    description = row['description'] or ''
-                    category = row['category'] or ''
-                    doc_type = row['doc_type'] or ''
-                    text = f"{title} {description}".lower()
+            except Exception as e:
+                self.logger.debug(f"Error fetching live news for {ticker}: {e}")
 
-                    headlines.append(title[:100])
+        # Fall back to database if available
+        if self.circulars_db and not fundamental.has_recent_news:
+            try:
+                import sqlite3
+                from datetime import datetime, timedelta
 
-                    # Detect catalyst type and sentiment
-                    catalyst_info = self._analyze_catalyst(title, description, category)
-                    if catalyst_info:
-                        catalysts.append(catalyst_info)
+                # Normalize ticker for database lookup
+                base_ticker = ticker.replace('.NS', '').replace('.BO', '').upper()
+                cutoff_date = (datetime.now() - timedelta(days=self.days_lookback)).isoformat()
 
-                        if catalyst_info['sentiment'] == 'BULLISH':
-                            bullish_count += 1
-                        elif catalyst_info['sentiment'] == 'BEARISH':
-                            bearish_count += 1
+                conn = sqlite3.connect(self.circulars_db)
+                conn.row_factory = sqlite3.Row
+                cursor = conn.cursor()
 
-                    # Check for earnings
-                    if any(kw in text for kw in ['result', 'quarter', 'earning', 'profit', 'revenue']):
-                        fundamental.earnings_surprise = self._detect_earnings_surprise(text)
-                        if fundamental.earnings_surprise == 'BEAT':
-                            fundamental.pead_score = 30.0
-                        elif fundamental.earnings_surprise == 'MISS':
-                            fundamental.pead_score = -30.0
+                # Fetch recent circulars for this ticker
+                sql = """
+                    SELECT id, ticker, company_name, title, description,
+                           doc_type, category, filing_date, parsed_text
+                    FROM circulars
+                    WHERE (ticker LIKE ? OR company_name LIKE ?)
+                      AND filing_date >= ?
+                    ORDER BY filing_date DESC
+                    LIMIT 20
+                """
+                cursor.execute(sql, (f"%{base_ticker}%", f"%{base_ticker}%", cutoff_date))
+                rows = cursor.fetchall()
+                conn.close()
 
-                fundamental.catalysts = catalysts[:5]
-                fundamental.recent_headlines = headlines[:5]
+                if rows:
+                    fundamental.has_recent_news = True
 
-                # Calculate news sentiment using NLP if available
-                if self.sentiment_analyzer and headlines:
-                    # Analyze all headlines and aggregate
-                    sentiment_scores = []
-                    for headline in headlines[:10]:  # Analyze up to 10 headlines
-                        if headline:
-                            result = self.sentiment_analyzer.analyze(headline)
-                            sentiment_scores.append(result.score)
+                    for row in rows:
+                        title = row['title'] or ''
+                        description = row['description'] or ''
+                        category = row['category'] or ''
+                        text = f"{title} {description}".lower()
 
-                    if sentiment_scores:
-                        avg_score = sum(sentiment_scores) / len(sentiment_scores)
+                        headlines.append(title[:100])
 
-                        # Map score to sentiment label and news_score
-                        if avg_score >= 0.3:
-                            fundamental.news_sentiment = 'BULLISH'
-                            fundamental.news_score = min(avg_score * 70, 50)
-                        elif avg_score <= -0.3:
-                            fundamental.news_sentiment = 'BEARISH'
-                            fundamental.news_score = max(avg_score * 70, -50)
-                        elif avg_score >= 0.1:
-                            fundamental.news_sentiment = 'BULLISH'
-                            fundamental.news_score = avg_score * 50
-                        elif avg_score <= -0.1:
-                            fundamental.news_sentiment = 'BEARISH'
-                            fundamental.news_score = avg_score * 50
-                        else:
-                            fundamental.news_sentiment = 'NEUTRAL'
-                            fundamental.news_score = avg_score * 30
+                        # Detect catalyst type and sentiment
+                        catalyst_info = self._analyze_catalyst(title, description, category)
+                        if catalyst_info:
+                            catalysts.append(catalyst_info)
+                            if catalyst_info['sentiment'] == 'BULLISH':
+                                bullish_count += 1
+                            elif catalyst_info['sentiment'] == 'BEARISH':
+                                bearish_count += 1
 
-                        # Store sentiment method for display
-                        fundamental.sentiment_method = self.sentiment_analyzer._active_method
-                else:
-                    # Fallback to keyword counting
-                    if bullish_count > bearish_count:
+                        # Check for earnings
+                        if any(kw in text for kw in ['result', 'quarter', 'earning', 'profit', 'revenue']):
+                            fundamental.earnings_surprise = self._detect_earnings_surprise(text)
+                            if fundamental.earnings_surprise == 'BEAT':
+                                fundamental.pead_score = 30.0
+                            elif fundamental.earnings_surprise == 'MISS':
+                                fundamental.pead_score = -30.0
+
+            except Exception as e:
+                self.logger.debug(f"Error fetching from database for {ticker}: {e}")
+
+        # Process collected data if we have news (from either source)
+        if fundamental.has_recent_news:
+            fundamental.catalysts = catalysts[:5]
+            fundamental.recent_headlines = headlines[:5]
+
+            # Calculate news sentiment using NLP if available
+            if self.sentiment_analyzer and headlines:
+                # Analyze all headlines and aggregate
+                sentiment_scores = []
+                for headline in headlines[:10]:  # Analyze up to 10 headlines
+                    if headline:
+                        result = self.sentiment_analyzer.analyze(headline)
+                        sentiment_scores.append(result.score)
+
+                if sentiment_scores:
+                    avg_score = sum(sentiment_scores) / len(sentiment_scores)
+
+                    # Map score to sentiment label and news_score
+                    if avg_score >= 0.3:
                         fundamental.news_sentiment = 'BULLISH'
-                        fundamental.news_score = min((bullish_count - bearish_count) * 15, 50)
-                    elif bearish_count > bullish_count:
+                        fundamental.news_score = min(avg_score * 70, 50)
+                    elif avg_score <= -0.3:
                         fundamental.news_sentiment = 'BEARISH'
-                        fundamental.news_score = max((bullish_count - bearish_count) * 15, -50)
+                        fundamental.news_score = max(avg_score * 70, -50)
+                    elif avg_score >= 0.1:
+                        fundamental.news_sentiment = 'BULLISH'
+                        fundamental.news_score = avg_score * 50
+                    elif avg_score <= -0.1:
+                        fundamental.news_sentiment = 'BEARISH'
+                        fundamental.news_score = avg_score * 50
                     else:
                         fundamental.news_sentiment = 'NEUTRAL'
-                        fundamental.news_score = 0
-                    fundamental.sentiment_method = 'Keyword'
+                        fundamental.news_score = avg_score * 30
 
-        except Exception as e:
-            self.logger.debug(f"Error fetching fundamental data for {ticker}: {e}")
+                    # Store sentiment method for display
+                    fundamental.sentiment_method = self.sentiment_analyzer._active_method
+            else:
+                # Fallback to keyword counting
+                if bullish_count > bearish_count:
+                    fundamental.news_sentiment = 'BULLISH'
+                    fundamental.news_score = min((bullish_count - bearish_count) * 15, 50)
+                elif bearish_count > bullish_count:
+                    fundamental.news_sentiment = 'BEARISH'
+                    fundamental.news_score = max((bullish_count - bearish_count) * 15, -50)
+                else:
+                    fundamental.news_sentiment = 'NEUTRAL'
+                    fundamental.news_score = 0
+                fundamental.sentiment_method = 'Keyword'
 
         # Cache result
         self._catalyst_cache[ticker] = fundamental
