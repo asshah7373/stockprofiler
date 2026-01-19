@@ -152,17 +152,31 @@ class LiveNewsFetcher:
 
         # Check cache
         if self._is_cache_valid(cache_key):
+            self.logger.debug(f"Using cached news for {ticker}")
             return self._cache[cache_key]
 
         all_news = []
+        errors = []
 
         # Fetch from Yahoo Finance
-        yahoo_news = self._fetch_yahoo_news(ticker)
-        all_news.extend(yahoo_news)
+        try:
+            yahoo_news = self._fetch_yahoo_news(ticker)
+            all_news.extend(yahoo_news)
+            self.logger.debug(f"Yahoo Finance returned {len(yahoo_news)} items for {ticker}")
+        except Exception as e:
+            errors.append(f"Yahoo: {e}")
 
         # Fetch from Google News RSS
-        google_news = self._fetch_google_news(ticker, days_back)
-        all_news.extend(google_news)
+        try:
+            google_news = self._fetch_google_news(ticker, days_back)
+            all_news.extend(google_news)
+            self.logger.debug(f"Google News returned {len(google_news)} items for {ticker}")
+        except Exception as e:
+            errors.append(f"Google: {e}")
+
+        # Log any errors at warning level so they're visible
+        if errors and not all_news:
+            self.logger.warning(f"News fetch errors for {ticker}: {'; '.join(errors)}")
 
         # Deduplicate by title similarity
         unique_news = self._deduplicate_news(all_news)
@@ -184,6 +198,7 @@ class LiveNewsFetcher:
         self._cache[cache_key] = filtered_news
         self._cache_time[cache_key] = datetime.now()
 
+        self.logger.debug(f"Total {len(filtered_news)} news items for {ticker}")
         return filtered_news
 
     def _fetch_yahoo_news(self, ticker: str) -> List[NewsItem]:
@@ -195,9 +210,19 @@ class LiveNewsFetcher:
 
             stock = yf.Ticker(ticker)
 
-            # Get news from yfinance
-            if hasattr(stock, 'news') and stock.news:
-                for item in stock.news[:10]:  # Limit to 10 items
+            # Get news from yfinance - try both 'news' attribute and get_news method
+            news_data = None
+            if hasattr(stock, 'news'):
+                news_data = stock.news
+            elif hasattr(stock, 'get_news'):
+                try:
+                    news_data = stock.get_news()
+                except Exception:
+                    pass
+
+            if news_data:
+                self.logger.debug(f"Yahoo Finance returned {len(news_data)} raw news items for {ticker}")
+                for item in news_data[:10]:  # Limit to 10 items
                     try:
                         # Parse publish time
                         pub_time = None
@@ -215,7 +240,11 @@ class LiveNewsFetcher:
                     except Exception as e:
                         self.logger.debug(f"Error parsing Yahoo news item: {e}")
                         continue
+            else:
+                self.logger.debug(f"No news data from Yahoo Finance for {ticker}")
 
+        except ImportError:
+            self.logger.warning("yfinance not installed - Yahoo Finance news disabled")
         except Exception as e:
             self.logger.debug(f"Error fetching Yahoo news for {ticker}: {e}")
 

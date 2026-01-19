@@ -1753,7 +1753,8 @@ def scan(
     ticker: Optional[str] = typer.Option(None, "--ticker", "-t", help="Scan single ticker"),
     fundamentals: bool = typer.Option(True, "--fundamentals/--no-fundamentals", help="Include NSE circulars/news data"),
     news_days: int = typer.Option(30, "--news-days", help="Days to look back for news/circulars"),
-    output_json: bool = typer.Option(False, "--json", "-j", help="Output as JSON")
+    output_json: bool = typer.Option(False, "--json", "-j", help="Output as JSON"),
+    verbose: bool = typer.Option(False, "--verbose", "-v", help="Show debug output including news fetching")
 ):
     """
     Scan Indian stocks using advanced technical indicators + fundamental data.
@@ -1833,6 +1834,12 @@ def scan(
         tickers = NIFTY_50
         universe_name = "Nifty 50"
 
+    # Setup logging if verbose
+    if verbose:
+        setup_logging(verbose=True)
+        logging.getLogger('finagent').setLevel(logging.DEBUG)
+        console.print("[dim]Verbose mode enabled - showing debug output[/dim]\n")
+
     fund_status = f"[green]Enabled[/green] ({news_days}-day lookback)" if fundamentals else "[dim]Disabled[/dim]"
     console.print(Panel(
         f"[bold cyan]Advanced Technical + Fundamental Scanner[/bold cyan]\n\n"
@@ -1846,6 +1853,13 @@ def scan(
 
     try:
         generator = AdvancedSignalGenerator(use_fundamentals=fundamentals, days_lookback=news_days)
+
+        # Show news fetcher status in verbose mode
+        if verbose and fundamentals and generator.fundamental_enhancer:
+            fe = generator.fundamental_enhancer
+            console.print(f"[dim]News fetcher: {'Enabled' if fe.news_fetcher else 'Disabled'}[/dim]")
+            console.print(f"[dim]Sentiment analyzer: {'Enabled' if fe.sentiment_analyzer else 'Disabled'}[/dim]")
+            console.print(f"[dim]Database: {fe.circulars_db or 'Not found (using live news)'}[/dim]\n")
 
         signals = []
         with Progress(

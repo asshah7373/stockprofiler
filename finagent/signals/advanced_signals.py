@@ -900,39 +900,43 @@ class FundamentalEnhancer:
         bearish_count = 0
 
         # Try live news first if enabled and no database
-        if self.use_live_news and self.news_fetcher and not self.circulars_db:
-            try:
-                news_items = self.news_fetcher.fetch_news(ticker, self.days_lookback)
+        if self.use_live_news and self.news_fetcher:
+            # Only use live news if no database is available
+            if not self.circulars_db:
+                try:
+                    self.logger.debug(f"Fetching live news for {ticker}...")
+                    news_items = self.news_fetcher.fetch_news(ticker, self.days_lookback)
+                    self.logger.debug(f"Got {len(news_items) if news_items else 0} news items for {ticker}")
 
-                if news_items:
-                    fundamental.has_recent_news = True
+                    if news_items:
+                        fundamental.has_recent_news = True
 
-                    for item in news_items[:15]:  # Process up to 15 items
-                        title = item.title or ''
-                        description = item.description or ''
-                        text = f"{title} {description}".lower()
+                        for item in news_items[:15]:  # Process up to 15 items
+                            title = item.title or ''
+                            description = item.description or ''
+                            text = f"{title} {description}".lower()
 
-                        headlines.append(title[:100])
+                            headlines.append(title[:100])
 
-                        # Detect catalyst type and sentiment
-                        catalyst_info = self._analyze_catalyst(title, description, '')
-                        if catalyst_info:
-                            catalysts.append(catalyst_info)
-                            if catalyst_info['sentiment'] == 'BULLISH':
-                                bullish_count += 1
-                            elif catalyst_info['sentiment'] == 'BEARISH':
-                                bearish_count += 1
+                            # Detect catalyst type and sentiment
+                            catalyst_info = self._analyze_catalyst(title, description, '')
+                            if catalyst_info:
+                                catalysts.append(catalyst_info)
+                                if catalyst_info['sentiment'] == 'BULLISH':
+                                    bullish_count += 1
+                                elif catalyst_info['sentiment'] == 'BEARISH':
+                                    bearish_count += 1
 
-                        # Check for earnings
-                        if any(kw in text for kw in ['result', 'quarter', 'earning', 'profit', 'revenue']):
-                            fundamental.earnings_surprise = self._detect_earnings_surprise(text)
-                            if fundamental.earnings_surprise == 'BEAT':
-                                fundamental.pead_score = 30.0
-                            elif fundamental.earnings_surprise == 'MISS':
-                                fundamental.pead_score = -30.0
+                            # Check for earnings
+                            if any(kw in text for kw in ['result', 'quarter', 'earning', 'profit', 'revenue']):
+                                fundamental.earnings_surprise = self._detect_earnings_surprise(text)
+                                if fundamental.earnings_surprise == 'BEAT':
+                                    fundamental.pead_score = 30.0
+                                elif fundamental.earnings_surprise == 'MISS':
+                                    fundamental.pead_score = -30.0
 
-            except Exception as e:
-                self.logger.debug(f"Error fetching live news for {ticker}: {e}")
+                except Exception as e:
+                    self.logger.warning(f"Error fetching live news for {ticker}: {e}")
 
         # Fall back to database if available
         if self.circulars_db and not fundamental.has_recent_news:
