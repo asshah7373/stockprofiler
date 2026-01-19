@@ -1742,6 +1742,191 @@ def pead(
         raise typer.Exit(1)
 
 
+@app.command()
+def scan(
+    universe: str = typer.Option("nifty50", "--universe", "-u", help="Stock universe (nifty50, nifty100, all)"),
+    hold_days: int = typer.Option(7, "--hold", "-h", help="Holding period in days"),
+    min_confidence: float = typer.Option(40.0, "--min-confidence", "-c", help="Minimum signal confidence (0-100)"),
+    count: int = typer.Option(20, "--count", "-n", help="Number of results to show"),
+    direction: str = typer.Option("all", "--direction", "-d", help="Filter by direction (buy, sell, all)"),
+    output_json: bool = typer.Option(False, "--json", "-j", help="Output as JSON")
+):
+    """
+    Scan Indian stocks using advanced technical indicators.
+
+    Uses multiple indicators to find trading opportunities:
+    - MACD (trend momentum)
+    - Williams %R Trend Exhaustion (tops/bottoms)
+    - Williams VixFix (volatility bottoms)
+    - Hull Moving Average (trend identification)
+    - Laguerre RSI (better moving averages)
+    - Supertrend (trailing stop levels)
+    - RSI with Divergence (reversal detection)
+    - Ichimoku Cloud (comprehensive analysis)
+
+    Examples:
+        finagent scan                           # Scan Nifty 50 with 7-day hold
+        finagent scan --hold 30                 # 30-day holding period
+        finagent scan --universe nifty100       # Scan Nifty 100
+        finagent scan --direction buy           # Only buy signals
+        finagent scan -c 60                     # High confidence only
+    """
+    from rich.panel import Panel
+    from rich.table import Table
+    from .signals.advanced_signals import (
+        AdvancedSignalGenerator, SignalDirection,
+        NIFTY_50, NIFTY_NEXT_50, ALL_INDIAN_STOCKS
+    )
+
+    # Select universe
+    if universe.lower() == "nifty50":
+        tickers = NIFTY_50
+        universe_name = "Nifty 50"
+    elif universe.lower() == "nifty100":
+        tickers = NIFTY_50 + NIFTY_NEXT_50
+        universe_name = "Nifty 100"
+    elif universe.lower() == "all":
+        tickers = ALL_INDIAN_STOCKS
+        universe_name = "All Indian Stocks"
+    else:
+        tickers = NIFTY_50
+        universe_name = "Nifty 50"
+
+    console.print(Panel(
+        f"[bold cyan]Advanced Technical Scanner[/bold cyan]\n\n"
+        f"Universe: {universe_name} ({len(tickers)} stocks)\n"
+        f"Holding Period: {hold_days} days\n"
+        f"Min Confidence: {min_confidence}%\n"
+        f"Direction Filter: {direction.upper()}",
+        title="FinAgent Scanner"
+    ))
+
+    try:
+        generator = AdvancedSignalGenerator()
+
+        signals = []
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(),
+            TaskProgressColumn(),
+            console=console
+        ) as progress:
+            task = progress.add_task(f"Scanning {len(tickers)} stocks...", total=len(tickers))
+
+            def progress_callback(current, total, ticker):
+                progress.update(task, completed=current, description=f"Scanning {ticker}...")
+
+            signals = generator.scan_stocks(
+                tickers=tickers,
+                hold_days=hold_days,
+                min_confidence=min_confidence,
+                progress_callback=progress_callback
+            )
+
+        # Filter by direction
+        if direction.lower() == "buy":
+            signals = [s for s in signals if s.direction in [SignalDirection.STRONG_BUY, SignalDirection.BUY]]
+        elif direction.lower() == "sell":
+            signals = [s for s in signals if s.direction in [SignalDirection.STRONG_SELL, SignalDirection.SELL]]
+
+        if output_json:
+            import json
+            console.print(json.dumps([s.to_dict() for s in signals[:count]], indent=2))
+            return
+
+        if not signals:
+            console.print("\n[yellow]No signals found matching criteria.[/yellow]")
+            console.print("[dim]Try lowering --min-confidence or changing --direction[/dim]")
+            return
+
+        # Summary
+        buy_signals = [s for s in signals if s.direction in [SignalDirection.STRONG_BUY, SignalDirection.BUY]]
+        sell_signals = [s for s in signals if s.direction in [SignalDirection.STRONG_SELL, SignalDirection.SELL]]
+
+        console.print(f"\n[bold]Scan Results:[/bold]")
+        console.print(f"  Total Signals: {len(signals)}")
+        console.print(f"  [green]Buy Signals: {len(buy_signals)}[/green]")
+        console.print(f"  [red]Sell Signals: {len(sell_signals)}[/red]")
+
+        # Main results table
+        table = Table(title=f"\nTop {min(count, len(signals))} Opportunities", show_header=True, header_style="bold")
+        table.add_column("Ticker", style="cyan", width=14)
+        table.add_column("Signal", justify="center", width=12)
+        table.add_column("Conf", justify="right", width=6)
+        table.add_column("Price", justify="right", width=10)
+        table.add_column("Entry", justify="right", width=10)
+        table.add_column("Stop", justify="right", width=10)
+        table.add_column("Target", justify="right", width=10)
+        table.add_column("Exp.Ret", justify="right", width=8)
+        table.add_column("R:R", justify="right", width=6)
+
+        for signal in signals[:count]:
+            dir_color = "green" if signal.direction in [SignalDirection.STRONG_BUY, SignalDirection.BUY] else "red"
+            dir_str = signal.direction.value.replace("_", " ")
+
+            table.add_row(
+                signal.ticker.replace(".NS", ""),
+                f"[{dir_color}]{dir_str}[/{dir_color}]",
+                f"{signal.confidence:.0f}%",
+                f"₹{signal.current_price:,.0f}",
+                f"₹{signal.entry_price:,.0f}",
+                f"₹{signal.stop_loss:,.0f}",
+                f"₹{signal.target_2:,.0f}",
+                f"[{dir_color}]{signal.expected_return_pct:+.1f}%[/{dir_color}]",
+                f"{signal.risk_reward_ratio:.1f}",
+            )
+
+        console.print(table)
+
+        # Detailed view for top signal
+        if signals:
+            top = signals[0]
+            console.print(f"\n[bold]Top Pick: {top.ticker.replace('.NS', '')}[/bold]")
+
+            dir_color = "green" if top.direction in [SignalDirection.STRONG_BUY, SignalDirection.BUY] else "red"
+            console.print(f"  Signal: [{dir_color}]{top.direction.value}[/{dir_color}] ({top.confidence:.0f}% confidence)")
+            console.print(f"  Current Price: ₹{top.current_price:,.2f}")
+
+            console.print(f"\n  [bold]Trade Setup:[/bold]")
+            console.print(f"    Entry: ₹{top.entry_price:,.2f}")
+            console.print(f"    Stop Loss: ₹{top.stop_loss:,.2f} ([red]{((top.stop_loss/top.entry_price)-1)*100:+.1f}%[/red])")
+            console.print(f"    Target 1: ₹{top.target_1:,.2f} ([green]{((top.target_1/top.entry_price)-1)*100:+.1f}%[/green])")
+            console.print(f"    Target 2: ₹{top.target_2:,.2f} ([green]{((top.target_2/top.entry_price)-1)*100:+.1f}%[/green])")
+            console.print(f"    Target 3: ₹{top.target_3:,.2f} ([green]{((top.target_3/top.entry_price)-1)*100:+.1f}%[/green])")
+            console.print(f"    Suggested Hold: {top.suggested_hold_days} days")
+            console.print(f"    Risk/Reward: {top.risk_reward_ratio:.2f}")
+
+            # Indicator breakdown
+            console.print(f"\n  [bold]Indicator Signals:[/bold]")
+            for name, ind in top.indicators.items():
+                ind_signal = ind.get('signal', 'N/A')
+                ind_strength = ind.get('strength', 0)
+                color = "green" if ind_signal in ['BUY', 'BULLISH', 'STRONG_BUY', 'OVERSOLD'] else (
+                    "red" if ind_signal in ['SELL', 'BEARISH', 'STRONG_SELL', 'OVERBOUGHT'] else "yellow"
+                )
+                console.print(f"    {name.upper():12} [{color}]{ind_signal:12}[/{color}] (strength: {ind_strength})")
+
+            if top.reasons:
+                console.print(f"\n  [bold green]Bullish Factors:[/bold green]")
+                for reason in top.reasons[:5]:
+                    console.print(f"    + {reason}")
+
+            if top.risks:
+                console.print(f"\n  [bold red]Risk Factors:[/bold red]")
+                for risk in top.risks[:5]:
+                    console.print(f"    - {risk}")
+
+        # Disclaimer
+        console.print(f"\n[dim]Disclaimer: Technical analysis is not financial advice. Always do your own research.[/dim]")
+
+    except Exception as e:
+        console.print(f"[red]Error: {e}[/red]")
+        import traceback
+        console.print(traceback.format_exc())
+        raise typer.Exit(1)
+
+
 @app.callback()
 def main(
     version: bool = typer.Option(False, "--version", "-V", help="Show version")

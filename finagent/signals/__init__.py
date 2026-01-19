@@ -4,6 +4,7 @@ FinAgent Signals Module
 This module contains signal generation and combination:
 - SignalCombiner: Merges multiple signals into actionable recommendations
 - PEADStrategy: Post-Earnings Announcement Drift signals
+- AdvancedSignalGenerator: Multi-indicator technical analysis
 - Signal types: Technical, Fundamental, Institutional, News-based, PEAD
 """
 
@@ -22,6 +23,16 @@ from .pead_strategy import (
     EarningsSurprise,
 )
 
+from .advanced_signals import (
+    AdvancedSignalGenerator,
+    AdvancedIndicators,
+    TechnicalSignal,
+    SignalDirection,
+    NIFTY_50,
+    NIFTY_NEXT_50,
+    ALL_INDIAN_STOCKS,
+)
+
 __all__ = [
     "SignalCombiner",
     "Signal",
@@ -32,4 +43,11 @@ __all__ = [
     "PEADSignal",
     "EarningsEvent",
     "EarningsSurprise",
+    "AdvancedSignalGenerator",
+    "AdvancedIndicators",
+    "TechnicalSignal",
+    "SignalDirection",
+    "NIFTY_50",
+    "NIFTY_NEXT_50",
+    "ALL_INDIAN_STOCKS",
 ]
