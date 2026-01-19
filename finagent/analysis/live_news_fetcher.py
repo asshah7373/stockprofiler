@@ -4,7 +4,8 @@ Live News Fetcher Module
 Fetches real-time news for Indian stocks from multiple sources:
 1. Yahoo Finance news API (via yfinance)
 2. Google News RSS feeds
-3. NSE India announcements
+3. NSE India corporate announcements
+4. BSE India corporate announcements
 
 No pre-ingestion required - fetches on demand during scan.
 """
@@ -12,10 +13,11 @@ No pre-ingestion required - fetches on demand during scan.
 import logging
 import re
 import hashlib
+import json
 from typing import Dict, List, Optional, Any
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from urllib.parse import quote_plus
+from urllib.parse import quote_plus, urlencode
 import xml.etree.ElementTree as ET
 
 logger = logging.getLogger(__name__)
@@ -49,7 +51,8 @@ class LiveNewsFetcher:
     Sources:
     1. Yahoo Finance - stock-specific news via yfinance
     2. Google News RSS - search-based news
-    3. NSE India - corporate announcements
+    3. NSE India - corporate announcements/circulars
+    4. BSE India - corporate announcements/circulars
 
     Usage:
         fetcher = LiveNewsFetcher()
@@ -157,6 +160,22 @@ class LiveNewsFetcher:
 
         all_news = []
         errors = []
+
+        # Fetch from NSE India corporate announcements (highest priority for Indian stocks)
+        try:
+            nse_news = self._fetch_nse_announcements(ticker, days_back)
+            all_news.extend(nse_news)
+            self.logger.debug(f"NSE returned {len(nse_news)} announcements for {ticker}")
+        except Exception as e:
+            errors.append(f"NSE: {e}")
+
+        # Fetch from BSE India corporate announcements
+        try:
+            bse_news = self._fetch_bse_announcements(ticker, days_back)
+            all_news.extend(bse_news)
+            self.logger.debug(f"BSE returned {len(bse_news)} announcements for {ticker}")
+        except Exception as e:
+            errors.append(f"BSE: {e}")
 
         # Fetch from Yahoo Finance
         try:
@@ -322,6 +341,202 @@ class LiveNewsFetcher:
 
         except Exception as e:
             self.logger.debug(f"Error fetching Google news for {ticker}: {e}")
+
+        return news_items
+
+    def _fetch_nse_announcements(self, ticker: str, days_back: int = 7) -> List[NewsItem]:
+        """
+        Fetch corporate announcements from NSE India.
+
+        NSE provides official corporate announcements including:
+        - Quarterly/Annual results
+        - Board meeting outcomes
+        - Corporate actions (dividends, bonus, splits)
+        - Shareholding patterns
+        - Press releases
+        """
+        news_items = []
+
+        try:
+            import urllib.request
+            import ssl
+
+            base_ticker = self._normalize_ticker(ticker)
+
+            # NSE API endpoint for corporate announcements
+            # Using the symbol to fetch announcements
+            nse_url = f"https://www.nseindia.com/api/corporate-announcements?index=equities&symbol={base_ticker}"
+
+            # NSE requires specific headers to work
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Accept': 'application/json, text/plain, */*',
+                'Accept-Language': 'en-US,en;q=0.9',
+                'Accept-Encoding': 'gzip, deflate, br',
+                'Referer': 'https://www.nseindia.com/',
+                'Connection': 'keep-alive',
+            }
+
+            # Create SSL context that doesn't verify (NSE has certificate issues sometimes)
+            ctx = ssl.create_default_context()
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
+
+            req = urllib.request.Request(nse_url, headers=headers)
+
+            with urllib.request.urlopen(req, timeout=10, context=ctx) as response:
+                data = json.loads(response.read().decode('utf-8'))
+
+            cutoff_date = datetime.now() - timedelta(days=days_back)
+
+            # Process announcements
+            if isinstance(data, list):
+                for item in data[:15]:  # Limit to 15 items
+                    try:
+                        # Parse date
+                        pub_time = None
+                        date_str = item.get('an_dt') or item.get('date')
+                        if date_str:
+                            try:
+                                # Try different date formats
+                                for fmt in ['%d-%b-%Y', '%d-%m-%Y', '%Y-%m-%d']:
+                                    try:
+                                        pub_time = datetime.strptime(date_str, fmt)
+                                        break
+                                    except ValueError:
+                                        continue
+                            except Exception:
+                                pass
+
+                        # Skip if older than cutoff
+                        if pub_time and pub_time < cutoff_date:
+                            continue
+
+                        subject = item.get('desc') or item.get('subject') or ''
+                        attchmnt = item.get('attchmntText') or item.get('attachment') or ''
+                        category = item.get('smIndustry') or item.get('category') or 'Corporate'
+
+                        news_items.append(NewsItem(
+                            title=subject[:200],
+                            description=f"{category}: {attchmnt[:300]}" if attchmnt else subject,
+                            source=f"NSE/{category}",
+                            published_date=pub_time,
+                            url=f"https://www.nseindia.com/companies-listing/corporate-filings-announcements",
+                            ticker=ticker,
+                        ))
+                    except Exception as e:
+                        self.logger.debug(f"Error parsing NSE item: {e}")
+                        continue
+
+        except Exception as e:
+            self.logger.debug(f"Error fetching NSE announcements for {ticker}: {e}")
+
+        return news_items
+
+    def _fetch_bse_announcements(self, ticker: str, days_back: int = 7) -> List[NewsItem]:
+        """
+        Fetch corporate announcements from BSE India.
+
+        BSE provides official corporate announcements including:
+        - Financial results
+        - Board meetings
+        - Corporate actions
+        - Press releases
+        - Shareholding disclosures
+        """
+        news_items = []
+
+        try:
+            import urllib.request
+            import ssl
+
+            base_ticker = self._normalize_ticker(ticker)
+            company_name = self._get_company_name(ticker)
+
+            # BSE API for announcements - search by company name
+            from_date = (datetime.now() - timedelta(days=days_back)).strftime('%Y%m%d')
+            to_date = datetime.now().strftime('%Y%m%d')
+
+            # BSE uses scrip codes, but we can search by name
+            bse_url = f"https://api.bseindia.com/BseIndiaAPI/api/AnnSubCategoryGetData/w?strCat=-1&strPrevDate={from_date}&strScrip=&strSearch=P&strToDate={to_date}&strType=C"
+
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Accept': 'application/json, text/plain, */*',
+                'Accept-Language': 'en-US,en;q=0.9',
+                'Referer': 'https://www.bseindia.com/',
+                'Origin': 'https://www.bseindia.com',
+            }
+
+            ctx = ssl.create_default_context()
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
+
+            req = urllib.request.Request(bse_url, headers=headers)
+
+            with urllib.request.urlopen(req, timeout=10, context=ctx) as response:
+                data = json.loads(response.read().decode('utf-8'))
+
+            # Filter by company name/ticker
+            if isinstance(data, dict) and 'Table' in data:
+                announcements = data['Table']
+            elif isinstance(data, list):
+                announcements = data
+            else:
+                announcements = []
+
+            cutoff_date = datetime.now() - timedelta(days=days_back)
+
+            for item in announcements[:50]:  # Check more items since we need to filter
+                try:
+                    # Check if this is for our company
+                    scrip_name = item.get('SLONGNAME', '') or item.get('SCRIP_NAME', '')
+                    news_sub = item.get('NEWSSUB', '') or item.get('NEWS_SUBJECT', '')
+
+                    # Match by ticker or company name
+                    if not (base_ticker.lower() in scrip_name.lower() or
+                            company_name.lower() in scrip_name.lower()):
+                        continue
+
+                    # Parse date
+                    pub_time = None
+                    date_str = item.get('NEWS_DT') or item.get('DisssemDT')
+                    if date_str:
+                        try:
+                            # BSE typically uses DD-Mon-YYYY or YYYY-MM-DD
+                            for fmt in ['%d %b %Y', '%d-%b-%Y', '%Y-%m-%d', '%d/%m/%Y']:
+                                try:
+                                    pub_time = datetime.strptime(date_str.strip()[:11], fmt)
+                                    break
+                                except ValueError:
+                                    continue
+                        except Exception:
+                            pass
+
+                    if pub_time and pub_time < cutoff_date:
+                        continue
+
+                    category = item.get('CATEGORYNAME', 'Corporate')
+                    headline = item.get('HEADLINE', '') or news_sub
+
+                    news_items.append(NewsItem(
+                        title=headline[:200],
+                        description=f"{category}: {news_sub[:300]}",
+                        source=f"BSE/{category}",
+                        published_date=pub_time,
+                        url="https://www.bseindia.com/corporates/ann.html",
+                        ticker=ticker,
+                    ))
+
+                    if len(news_items) >= 10:  # Limit results
+                        break
+
+                except Exception as e:
+                    self.logger.debug(f"Error parsing BSE item: {e}")
+                    continue
+
+        except Exception as e:
+            self.logger.debug(f"Error fetching BSE announcements for {ticker}: {e}")
 
         return news_items
 
