@@ -1744,11 +1744,13 @@ def pead(
 
 @app.command()
 def scan(
-    universe: str = typer.Option("nifty50", "--universe", "-u", help="Stock universe (nifty50, nifty100, all)"),
+    universe: str = typer.Option("nifty50", "--universe", "-u", help="Stock universe (nifty50, nifty100, nifty200, fno, all, custom)"),
     hold_days: int = typer.Option(7, "--hold", "-h", help="Holding period in days"),
     min_confidence: float = typer.Option(40.0, "--min-confidence", "-c", help="Minimum signal confidence (0-100)"),
     count: int = typer.Option(20, "--count", "-n", help="Number of results to show"),
     direction: str = typer.Option("all", "--direction", "-d", help="Filter by direction (buy, sell, all)"),
+    tickers_file: Optional[str] = typer.Option(None, "--file", "-f", help="File with tickers (one per line)"),
+    ticker: Optional[str] = typer.Option(None, "--ticker", "-t", help="Scan single ticker"),
     output_json: bool = typer.Option(False, "--json", "-j", help="Output as JSON")
 ):
     """
@@ -1764,30 +1766,61 @@ def scan(
     - RSI with Divergence (reversal detection)
     - Ichimoku Cloud (comprehensive analysis)
 
+    Stock Universes:
+    - nifty50: Top 50 stocks by market cap
+    - nifty100: Top 100 stocks
+    - nifty200: Top 200 stocks
+    - fno: All F&O stocks (~200)
+    - all: All major NSE stocks (~500)
+    - custom: Use --file to provide your own list
+
     Examples:
-        finagent scan                           # Scan Nifty 50 with 7-day hold
+        finagent scan                           # Scan Nifty 50
+        finagent scan --universe all            # Scan all ~500 stocks
+        finagent scan --universe fno            # Scan F&O stocks
+        finagent scan --ticker RELIANCE.NS      # Scan single stock
+        finagent scan --file my_stocks.txt      # Scan from file
         finagent scan --hold 30                 # 30-day holding period
-        finagent scan --universe nifty100       # Scan Nifty 100
-        finagent scan --direction buy           # Only buy signals
-        finagent scan -c 60                     # High confidence only
     """
     from rich.panel import Panel
     from rich.table import Table
     from .signals.advanced_signals import (
         AdvancedSignalGenerator, SignalDirection,
-        NIFTY_50, NIFTY_NEXT_50, ALL_INDIAN_STOCKS
+        NIFTY_50, NIFTY_NEXT_50, ALL_INDIAN_STOCKS,
+        NIFTY_200, FNO_STOCKS, BROAD_MARKET
     )
 
     # Select universe
-    if universe.lower() == "nifty50":
+    if ticker:
+        # Single ticker scan
+        tickers = [ticker if ".NS" in ticker or ".BO" in ticker else f"{ticker}.NS"]
+        universe_name = f"Single Stock: {ticker}"
+    elif tickers_file:
+        # Load from file
+        try:
+            with open(tickers_file, 'r') as f:
+                tickers = [line.strip() for line in f if line.strip()]
+                # Add .NS suffix if missing
+                tickers = [t if ".NS" in t or ".BO" in t else f"{t}.NS" for t in tickers]
+            universe_name = f"Custom ({len(tickers)} from file)"
+        except FileNotFoundError:
+            console.print(f"[red]Error: File not found: {tickers_file}[/red]")
+            raise typer.Exit(1)
+    elif universe.lower() == "nifty50":
         tickers = NIFTY_50
         universe_name = "Nifty 50"
     elif universe.lower() == "nifty100":
         tickers = NIFTY_50 + NIFTY_NEXT_50
         universe_name = "Nifty 100"
+    elif universe.lower() == "nifty200":
+        tickers = NIFTY_200
+        universe_name = "Nifty 200"
+    elif universe.lower() == "fno":
+        tickers = FNO_STOCKS
+        universe_name = "F&O Stocks"
     elif universe.lower() == "all":
-        tickers = ALL_INDIAN_STOCKS
-        universe_name = "All Indian Stocks"
+        tickers = BROAD_MARKET
+        universe_name = "All NSE Stocks"
     else:
         tickers = NIFTY_50
         universe_name = "Nifty 50"
