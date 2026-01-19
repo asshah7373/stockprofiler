@@ -2028,6 +2028,87 @@ def scan(
         raise typer.Exit(1)
 
 
+@app.command("test-news")
+def test_news(
+    ticker: str = typer.Argument(..., help="Stock ticker (e.g., RELIANCE.NS)"),
+    days: int = typer.Option(7, "--days", "-d", help="Days to look back for news"),
+):
+    """
+    Test live news fetching for a single ticker.
+
+    Use this to diagnose why news isn't showing in the scanner.
+
+    Examples:
+        finagent test-news RELIANCE.NS
+        finagent test-news INFY.NS --days 14
+    """
+    from rich.panel import Panel
+
+    # Ensure ticker has suffix
+    if ".NS" not in ticker and ".BO" not in ticker:
+        ticker = f"{ticker}.NS"
+
+    console.print(Panel(
+        f"[bold cyan]Testing News Fetching[/bold cyan]\n\n"
+        f"Ticker: {ticker}\n"
+        f"Days Back: {days}",
+        title="FinAgent News Test"
+    ))
+
+    try:
+        from .analysis.live_news_fetcher import LiveNewsFetcher
+
+        fetcher = LiveNewsFetcher()
+        console.print(f"\n[bold]Fetching news for {ticker}...[/bold]")
+
+        # Enable debug logging for this test
+        import logging
+        logging.basicConfig(level=logging.DEBUG)
+
+        news_items = fetcher.fetch_news(ticker, days_back=days)
+
+        if not news_items:
+            console.print(f"\n[yellow]No news found for {ticker}[/yellow]")
+            console.print("\nPossible reasons:")
+            console.print("  1. No recent news published about this company")
+            console.print("  2. Google News RSS may be blocked in your network")
+            console.print("  3. Yahoo Finance may not return news for this ticker")
+        else:
+            console.print(f"\n[green]Found {len(news_items)} news items:[/green]\n")
+
+            for i, item in enumerate(news_items[:10], 1):
+                console.print(f"[bold]{i}. [{item.source}][/bold]")
+                console.print(f"   {item.title[:80]}")
+                if item.published_date:
+                    console.print(f"   [dim]Date: {item.published_date.strftime('%Y-%m-%d %H:%M')}[/dim]")
+                console.print()
+
+            # Test sentiment analysis
+            console.print("\n[bold]Testing Sentiment Analysis:[/bold]")
+            try:
+                from .analysis.sentiment_analyzer import FinancialSentimentAnalyzer
+
+                analyzer = FinancialSentimentAnalyzer()
+                methods = analyzer.get_available_methods()
+                console.print(f"  Available methods: {', '.join(methods)}")
+
+                # Analyze first 3 headlines
+                console.print("\n  Sample sentiment analysis:")
+                for item in news_items[:3]:
+                    result = analyzer.analyze(item.title)
+                    color = "green" if result.score > 0.1 else ("red" if result.score < -0.1 else "yellow")
+                    console.print(f"    [{color}]{result.label.value}[/{color}] ({result.score:+.2f}): {item.title[:50]}...")
+
+            except Exception as e:
+                console.print(f"  [red]Sentiment analyzer error: {e}[/red]")
+
+    except Exception as e:
+        console.print(f"[red]Error: {e}[/red]")
+        import traceback
+        console.print(traceback.format_exc())
+        raise typer.Exit(1)
+
+
 @app.callback()
 def main(
     version: bool = typer.Option(False, "--version", "-V", help="Show version")
