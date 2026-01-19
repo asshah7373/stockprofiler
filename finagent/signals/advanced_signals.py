@@ -45,6 +45,7 @@ class FundamentalData:
     earnings_surprise: Optional[str] = None  # BEAT, MISS, INLINE
     pead_score: float = 0.0  # -100 to +100
     recent_headlines: List[str] = field(default_factory=list)
+    sentiment_method: str = "Keyword"  # FinBERT, VADER, or Keyword
 
     def to_dict(self) -> Dict:
         return {
@@ -55,6 +56,7 @@ class FundamentalData:
             'earnings_surprise': self.earnings_surprise,
             'pead_score': round(self.pead_score, 1),
             'recent_headlines': self.recent_headlines[:3],
+            'sentiment_method': self.sentiment_method,
         }
 
 
@@ -826,15 +828,30 @@ class FundamentalEnhancer:
     - Press releases
     - News catalysts
     - PEAD (Post-Earnings Announcement Drift) signals
+
+    Uses NLP-based sentiment analysis (FinBERT/VADER) when available,
+    falls back to keyword matching otherwise.
     """
 
-    def __init__(self, circulars_db: str = None, days_lookback: int = 30):
+    def __init__(self, circulars_db: str = None, days_lookback: int = 30, use_nlp: bool = True):
         self.logger = logging.getLogger(__name__)
         self.days_lookback = days_lookback
+        self.use_nlp = use_nlp
 
         # Find circulars database
         self.circulars_db = self._find_database(circulars_db)
         self._catalyst_cache: Dict[str, FundamentalData] = {}
+
+        # Initialize sentiment analyzer
+        self.sentiment_analyzer = None
+        if use_nlp:
+            try:
+                from ..analysis.sentiment_analyzer import FinancialSentimentAnalyzer
+                self.sentiment_analyzer = FinancialSentimentAnalyzer()
+                methods = self.sentiment_analyzer.get_available_methods()
+                self.logger.info(f"Sentiment analysis available: {methods}")
+            except ImportError as e:
+                self.logger.warning(f"Could not load sentiment analyzer: {e}")
 
     def _find_database(self, db_path: Optional[str] = None) -> Optional[str]:
         """Find the circulars database."""
@@ -931,16 +948,49 @@ class FundamentalEnhancer:
                 fundamental.catalysts = catalysts[:5]
                 fundamental.recent_headlines = headlines[:5]
 
-                # Calculate news sentiment and score
-                if bullish_count > bearish_count:
-                    fundamental.news_sentiment = 'BULLISH'
-                    fundamental.news_score = min((bullish_count - bearish_count) * 15, 50)
-                elif bearish_count > bullish_count:
-                    fundamental.news_sentiment = 'BEARISH'
-                    fundamental.news_score = max((bullish_count - bearish_count) * 15, -50)
+                # Calculate news sentiment using NLP if available
+                if self.sentiment_analyzer and headlines:
+                    # Analyze all headlines and aggregate
+                    sentiment_scores = []
+                    for headline in headlines[:10]:  # Analyze up to 10 headlines
+                        if headline:
+                            result = self.sentiment_analyzer.analyze(headline)
+                            sentiment_scores.append(result.score)
+
+                    if sentiment_scores:
+                        avg_score = sum(sentiment_scores) / len(sentiment_scores)
+
+                        # Map score to sentiment label and news_score
+                        if avg_score >= 0.3:
+                            fundamental.news_sentiment = 'BULLISH'
+                            fundamental.news_score = min(avg_score * 70, 50)
+                        elif avg_score <= -0.3:
+                            fundamental.news_sentiment = 'BEARISH'
+                            fundamental.news_score = max(avg_score * 70, -50)
+                        elif avg_score >= 0.1:
+                            fundamental.news_sentiment = 'BULLISH'
+                            fundamental.news_score = avg_score * 50
+                        elif avg_score <= -0.1:
+                            fundamental.news_sentiment = 'BEARISH'
+                            fundamental.news_score = avg_score * 50
+                        else:
+                            fundamental.news_sentiment = 'NEUTRAL'
+                            fundamental.news_score = avg_score * 30
+
+                        # Store sentiment method for display
+                        fundamental.sentiment_method = self.sentiment_analyzer._active_method
                 else:
-                    fundamental.news_sentiment = 'NEUTRAL'
-                    fundamental.news_score = 0
+                    # Fallback to keyword counting
+                    if bullish_count > bearish_count:
+                        fundamental.news_sentiment = 'BULLISH'
+                        fundamental.news_score = min((bullish_count - bearish_count) * 15, 50)
+                    elif bearish_count > bullish_count:
+                        fundamental.news_sentiment = 'BEARISH'
+                        fundamental.news_score = max((bullish_count - bearish_count) * 15, -50)
+                    else:
+                        fundamental.news_sentiment = 'NEUTRAL'
+                        fundamental.news_score = 0
+                    fundamental.sentiment_method = 'Keyword'
 
         except Exception as e:
             self.logger.debug(f"Error fetching fundamental data for {ticker}: {e}")

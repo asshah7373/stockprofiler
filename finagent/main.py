@@ -1981,7 +1981,9 @@ def scan(
 
                 sentiment = top.fundamental.news_sentiment
                 sent_color = "green" if sentiment == "BULLISH" else ("red" if sentiment == "BEARISH" else "yellow")
-                console.print(f"    News Sentiment: [{sent_color}]{sentiment}[/{sent_color}] (score: {top.fundamental.news_score:+.0f})")
+                method = getattr(top.fundamental, 'sentiment_method', 'Keyword')
+                method_color = "cyan" if method == "FinBERT" else ("blue" if method == "VADER" else "dim")
+                console.print(f"    News Sentiment: [{sent_color}]{sentiment}[/{sent_color}] (score: {top.fundamental.news_score:+.0f}) via [{method_color}]{method}[/{method_color}]")
 
                 if top.fundamental.earnings_surprise:
                     ear_color = "green" if top.fundamental.earnings_surprise == "BEAT" else ("red" if top.fundamental.earnings_surprise == "MISS" else "yellow")
