@@ -64,8 +64,9 @@ class LiveNewsFetcher:
     _cache_time: Dict[str, datetime] = {}
     _cache_ttl = timedelta(minutes=30)  # Cache for 30 minutes
 
-    # Company name mappings for better search
+    # Company name mappings for better search (expanded list)
     COMPANY_NAMES = {
+        # Nifty 50
         "RELIANCE": "Reliance Industries",
         "TCS": "Tata Consultancy Services",
         "HDFCBANK": "HDFC Bank",
@@ -76,7 +77,7 @@ class LiveNewsFetcher:
         "BHARTIARTL": "Bharti Airtel",
         "KOTAKBANK": "Kotak Mahindra Bank",
         "ITC": "ITC Limited",
-        "LT": "Larsen & Toubro",
+        "LT": "Larsen Toubro",
         "AXISBANK": "Axis Bank",
         "ASIANPAINT": "Asian Paints",
         "MARUTI": "Maruti Suzuki",
@@ -89,20 +90,20 @@ class LiveNewsFetcher:
         "TATAMOTORS": "Tata Motors",
         "ADANIENT": "Adani Enterprises",
         "ADANIPORTS": "Adani Ports",
-        "NTPC": "NTPC Limited",
+        "NTPC": "NTPC Power",
         "POWERGRID": "Power Grid Corporation",
-        "ONGC": "Oil and Natural Gas Corporation",
+        "ONGC": "ONGC Oil Gas",
         "COALINDIA": "Coal India",
         "JSWSTEEL": "JSW Steel",
         "HINDALCO": "Hindalco Industries",
         "ULTRACEMCO": "UltraTech Cement",
         "GRASIM": "Grasim Industries",
         "TECHM": "Tech Mahindra",
-        "DRREDDY": "Dr. Reddy's Laboratories",
-        "CIPLA": "Cipla",
+        "DRREDDY": "Dr Reddy Laboratories",
+        "CIPLA": "Cipla Pharma",
         "BRITANNIA": "Britannia Industries",
         "NESTLEIND": "Nestle India",
-        "DIVISLAB": "Divi's Laboratories",
+        "DIVISLAB": "Divi Laboratories",
         "APOLLOHOSP": "Apollo Hospitals",
         "EICHERMOT": "Eicher Motors",
         "BAJAJ-AUTO": "Bajaj Auto",
@@ -113,6 +114,103 @@ class LiveNewsFetcher:
         "SBILIFE": "SBI Life Insurance",
         "TATACONSUM": "Tata Consumer Products",
         "UPL": "UPL Limited",
+        # Nifty Next 50 and Mid-cap
+        "DMART": "Avenue Supermarts DMart",
+        "ADANIGREEN": "Adani Green Energy",
+        "AMBUJACEM": "Ambuja Cements",
+        "BANKBARODA": "Bank of Baroda",
+        "CANBK": "Canara Bank",
+        "CHOLAFIN": "Cholamandalam Finance",
+        "COLPAL": "Colgate Palmolive India",
+        "DABUR": "Dabur India",
+        "DLF": "DLF Real Estate",
+        "GAIL": "GAIL India Gas",
+        "GODREJCP": "Godrej Consumer Products",
+        "HAVELLS": "Havells India",
+        "INDIGO": "IndiGo Airlines InterGlobe",
+        "JINDALSTEL": "Jindal Steel Power",
+        "LICI": "LIC India Insurance",
+        "MARICO": "Marico India",
+        "MUTHOOTFIN": "Muthoot Finance",
+        "NAUKRI": "Naukri InfoEdge",
+        "PIDILITIND": "Pidilite Industries",
+        "PNB": "Punjab National Bank",
+        "SIEMENS": "Siemens India",
+        "SRF": "SRF Limited",
+        "TORNTPHARM": "Torrent Pharmaceuticals",
+        "TRENT": "Trent Westside Zudio",
+        "VEDL": "Vedanta Limited",
+        "ETERNAL": "Zomato Eternal",
+        "ZYDUSLIFE": "Zydus Lifesciences",
+        # Popular Mid-caps
+        "CARERATING": "CARE Ratings",
+        "FEDERALBNK": "Federal Bank",
+        "IDFCFIRSTB": "IDFC First Bank",
+        "IRCTC": "IRCTC Railways",
+        "HAL": "Hindustan Aeronautics HAL",
+        "BEL": "Bharat Electronics BEL",
+        "DIXON": "Dixon Technologies",
+        "POLYCAB": "Polycab India",
+        "PERSISTENT": "Persistent Systems",
+        "COFORGE": "Coforge IT",
+        "MPHASIS": "Mphasis IT",
+        "LTIM": "LTIMindtree",
+        "LTTS": "L&T Technology Services",
+        "HAPPSTMNDS": "Happiest Minds Technologies",
+        "KPITTECH": "KPIT Technologies",
+        "TATAELXSI": "Tata Elxsi",
+        "MINDACORP": "Minda Corporation",
+        "EXIDEIND": "Exide Industries",
+        "ESCORTS": "Escorts Kubota",
+        "ASHOKLEY": "Ashok Leyland",
+        "TVSMOTORS": "TVS Motor Company",
+        "BIOCON": "Biocon Pharma",
+        "LUPIN": "Lupin Pharma",
+        "AUROPHARMA": "Aurobindo Pharma",
+        "ALKEM": "Alkem Laboratories",
+        "GLENMARK": "Glenmark Pharma",
+        "GRANULES": "Granules India Pharma",
+        "LALPATHLAB": "Dr Lal PathLabs",
+        "METROPOLIS": "Metropolis Healthcare",
+        "MAXHEALTH": "Max Healthcare",
+        "FORTIS": "Fortis Healthcare",
+        "JUBLFOOD": "Jubilant FoodWorks Dominos",
+        "ZEEL": "Zee Entertainment",
+        "PVRINOX": "PVR INOX Cinema",
+        "TATAPOWER": "Tata Power",
+        "ADANIPOWER": "Adani Power",
+        "NHPC": "NHPC Hydro Power",
+        "RECLTD": "REC Limited Power Finance",
+        "PFC": "Power Finance Corporation",
+        "IRFC": "Indian Railway Finance",
+        "HUDCO": "HUDCO Housing",
+        "SAIL": "Steel Authority of India SAIL",
+        "NMDC": "NMDC Mining",
+        "NATIONALUM": "National Aluminium NALCO",
+        "HINDCOPPER": "Hindustan Copper",
+        "COALINDIA": "Coal India",
+        "RVNL": "Rail Vikas Nigam",
+        "IRCON": "IRCON International Railways",
+        "NBCC": "NBCC Construction",
+        "SJVN": "SJVN Power",
+        "MASTEK": "Mastek IT",
+        "ECLERX": "eClerx Services",
+        "CYIENT": "Cyient Engineering",
+        "INFY": "Infosys",
+        "GALLANTT": "Gallantt Ispat Steel",
+        "INDOWIND": "Indo Wind Energy",
+        "EMKAY": "Emkay Global Financial",
+        "GRPLTD": "GRP Limited",
+        "HCC": "Hindustan Construction Company",
+        "HMVL": "HT Media",
+        "INDIAMART": "IndiaMART InterMESH",
+        "GLOBUSSPR": "Globus Spirits",
+        "KAJARIACER": "Kajaria Ceramics",
+        "HERCULES": "Hercules Hoists",
+        "CAMLINFINE": "Camlin Fine Sciences",
+        "AARTISURF": "Aarti Surfactants",
+        "ASIANHOTNR": "Asian Hotels North",
+        "GRSE": "Garden Reach Shipbuilders GRSE",
     }
 
     def __init__(self, use_cache: bool = True):
@@ -138,7 +236,29 @@ class LiveNewsFetcher:
     def _get_company_name(self, ticker: str) -> str:
         """Get company name for search queries."""
         base_ticker = self._normalize_ticker(ticker)
-        return self.COMPANY_NAMES.get(base_ticker, base_ticker)
+        if base_ticker in self.COMPANY_NAMES:
+            return self.COMPANY_NAMES[base_ticker]
+
+        # For unknown tickers, create a search-friendly name
+        # Convert CAMELCASE or abbreviations to readable format
+        # E.g., "CARERATING" -> "Care Rating", "FEDERALBNK" -> "Federal Bank"
+        name = base_ticker
+
+        # Common suffixes to expand
+        suffixes = {
+            'BNK': ' Bank', 'BANK': ' Bank', 'FIN': ' Finance',
+            'TECH': ' Technologies', 'PHARMA': ' Pharma', 'IND': ' Industries',
+            'LTD': '', 'AUTO': ' Auto', 'INFRA': ' Infrastructure',
+            'POWER': ' Power', 'CEMENT': ' Cement', 'STEEL': ' Steel'
+        }
+
+        for suffix, replacement in suffixes.items():
+            if name.endswith(suffix):
+                name = name[:-len(suffix)] + replacement
+                break
+
+        # Add "India stock" to improve search relevance
+        return f"{name} India"
 
     def fetch_news(self, ticker: str, days_back: int = 7) -> List[NewsItem]:
         """
