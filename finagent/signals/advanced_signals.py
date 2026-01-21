@@ -849,22 +849,28 @@ class FundamentalEnhancer:
         self.news_fetcher = None
         if use_live_news:
             try:
-                from ..analysis.live_news_fetcher import LiveNewsFetcher
+                # Use absolute import for reliability
+                from finagent.analysis.live_news_fetcher import LiveNewsFetcher
                 self.news_fetcher = LiveNewsFetcher()
                 self.logger.info("Live news fetching enabled")
             except ImportError as e:
                 self.logger.warning(f"Could not load live news fetcher: {e}")
+            except Exception as e:
+                self.logger.warning(f"Error initializing live news fetcher: {e}")
 
         # Initialize sentiment analyzer
         self.sentiment_analyzer = None
         if use_nlp:
             try:
-                from ..analysis.sentiment_analyzer import FinancialSentimentAnalyzer
+                # Use absolute import for reliability
+                from finagent.analysis.sentiment_analyzer import FinancialSentimentAnalyzer
                 self.sentiment_analyzer = FinancialSentimentAnalyzer()
                 methods = self.sentiment_analyzer.get_available_methods()
                 self.logger.info(f"Sentiment analysis available: {methods}")
             except ImportError as e:
                 self.logger.warning(f"Could not load sentiment analyzer: {e}")
+            except Exception as e:
+                self.logger.warning(f"Error initializing sentiment analyzer: {e}")
 
     def _find_database(self, db_path: Optional[str] = None) -> Optional[str]:
         """Find the circulars database."""
@@ -904,9 +910,8 @@ class FundamentalEnhancer:
             # Only use live news if no database is available
             if not self.circulars_db:
                 try:
-                    self.logger.debug(f"Fetching live news for {ticker}...")
                     news_items = self.news_fetcher.fetch_news(ticker, self.days_lookback)
-                    self.logger.debug(f"Got {len(news_items) if news_items else 0} news items for {ticker}")
+                    self.logger.debug(f"Live news for {ticker}: {len(news_items) if news_items else 0} items")
 
                     if news_items:
                         fundamental.has_recent_news = True
