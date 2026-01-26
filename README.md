@@ -193,32 +193,99 @@ finagent analyze HDFCBANK.NS --json
 
 ### Stock Scanner
 
-Scan the market for top opportunities with integrated news sentiment:
+Scan the market for top opportunities using 8 advanced technical indicators combined with real-time news sentiment analysis.
+
+**Technical Indicators Used:**
+- MACD (trend momentum)
+- Williams %R Trend Exhaustion (tops/bottoms)
+- Williams VixFix (volatility bottoms)
+- Hull Moving Average (trend identification)
+- Laguerre RSI (smoothed momentum)
+- Supertrend (trailing stop levels)
+- RSI with Divergence (reversal detection)
+- Ichimoku Cloud (comprehensive trend analysis)
+
+**Fundamental/News Integration:**
+- Live news from Google News, Yahoo Finance, NSE, BSE
+- Sentiment scored via FinBERT/VADER/Keywords
+- Catalyst detection: contract wins, earnings, expansions, dividends
+- PEAD (Post-Earnings Announcement Drift) signals
+- Combined score: 70% technical + 30% fundamental, 15% alignment boost
+
+**All Options:**
+
+| Option | Short | Default | Description |
+|--------|-------|---------|-------------|
+| `--universe` | `-u` | `nifty50` | Stock universe to scan |
+| `--hold` | `-h` | `7` | Holding period in days |
+| `--min-confidence` | `-c` | `40.0` | Minimum signal confidence (0-100) |
+| `--count` | `-n` | `20` | Number of results to show |
+| `--direction` | `-d` | `all` | Filter: `buy`, `sell`, or `all` |
+| `--file` | `-f` | | Custom ticker file (one per line) |
+| `--ticker` | `-t` | | Scan a single ticker |
+| `--fundamentals` | | `True` | Include news/sentiment (`--no-fundamentals` to disable) |
+| `--news-days` | | `30` | Days to look back for news/circulars |
+| `--json` | `-j` | `False` | Output as JSON |
+| `--verbose` | `-v` | `False` | Show debug output (news fetching, sentiment) |
+
+**Stock Universes:**
+
+| Universe | Stocks | Description |
+|----------|--------|-------------|
+| `nifty50` | 50 | Nifty 50 index constituents |
+| `nifty100` | ~83 | Nifty 50 + Nifty Next 50 |
+| `nifty200` | ~200 | Nifty 50 + Next 50 + Nifty 200 |
+| `fno` | ~230 | All F&O eligible stocks |
+| `midcap` | ~400 | Mid-cap and small-cap NSE stocks |
+| `all` | ~500 | All major NSE stocks (broad market) |
+| `comprehensive` / `nsebse` | ~1500 | All NSE + BSE stocks |
+| `custom` | varies | Use `--file` to provide your own list |
+
+**Examples:**
 
 ```bash
-# Scan Nifty 50 stocks with 7-day holding horizon
+# Scan Nifty 50 with 7-day holding (default)
 finagent scan --universe nifty50 --hold 7
 
-# Scan midcap stocks (900+ stocks)
+# Scan midcap stocks
 finagent scan --universe midcap --hold 7
 
 # Scan comprehensive NSE+BSE universe (1500+ stocks)
 finagent scan --universe nsebse --hold 14
 
-# Scan with verbose output (shows news fetching details)
+# Only show buy signals with high confidence
+finagent scan --universe nifty200 --direction buy --min-confidence 60
+
+# Scan single stock
+finagent scan --ticker RELIANCE.NS
+
+# Scan custom list from file
+finagent scan --file my_watchlist.txt --hold 14
+
+# Fast scan without news/sentiment (technical only)
+finagent scan --universe all --no-fundamentals
+
+# Recent news only (7-day lookback instead of default 30)
+finagent scan --universe nifty50 --news-days 7
+
+# Show top 50 results
+finagent scan --universe fno --count 50
+
+# Verbose mode (debug news fetching and sentiment)
 finagent scan --universe nifty50 --hold 7 --verbose
 
-# Scan F&O eligible stocks
-finagent scan --universe fno --hold 7
-
-# Scan broad market (~500 stocks)
-finagent scan --universe broad --hold 7
-
-# Scan without fundamental/news data
-finagent scan --universe nifty50 --hold 7 --no-fundamentals
+# JSON output for programmatic use
+finagent scan --universe nifty50 --json
 ```
 
-The scanner fetches live news, performs sentiment analysis (FinBERT/VADER/Keyword), and integrates news scores into the combined recommendation score.
+**Output includes:**
+- Ticker, signal direction (Strong Buy/Buy/Sell/Strong Sell)
+- Technical confidence score (%)
+- News sentiment (BULL/BEAR/NEUT) with method used (FinBERT/VADER/Keyword)
+- Combined score (technical + fundamental)
+- Current price, target price, expected return, risk:reward ratio
+- Detailed breakdown for top pick: entry, stop loss, 3 targets, hold days
+- Indicator signals, bullish/bearish factors, catalysts, recent headlines
 
 ### News-Driven Suggestions
 
