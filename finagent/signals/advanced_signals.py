@@ -47,6 +47,19 @@ class FundamentalData:
     recent_headlines: List[str] = field(default_factory=list)
     sentiment_method: str = "Keyword"  # FinBERT, VADER, or Keyword
 
+    # Institutional data
+    fii_sentiment: str = "NEUTRAL"  # BULLISH, BEARISH, NEUTRAL
+    dii_sentiment: str = "NEUTRAL"
+    institutional_score: float = 0.0  # -50 to +50
+    bulk_deals: List[Dict[str, Any]] = field(default_factory=list)
+    insider_activity: str = "NEUTRAL"  # BUYING, SELLING, NEUTRAL
+
+    # Policy/Macro impact
+    has_policy_boost: bool = False
+    policy_score: float = 0.0  # -50 to +50
+    affected_sectors: List[str] = field(default_factory=list)
+    relevant_policies: List[Dict[str, Any]] = field(default_factory=list)
+
     def to_dict(self) -> Dict:
         return {
             'has_recent_news': self.has_recent_news,
@@ -57,6 +70,17 @@ class FundamentalData:
             'pead_score': round(self.pead_score, 1),
             'recent_headlines': self.recent_headlines[:3],
             'sentiment_method': self.sentiment_method,
+            # Institutional
+            'fii_sentiment': self.fii_sentiment,
+            'dii_sentiment': self.dii_sentiment,
+            'institutional_score': round(self.institutional_score, 1),
+            'bulk_deals': self.bulk_deals[:3],
+            'insider_activity': self.insider_activity,
+            # Policy
+            'has_policy_boost': self.has_policy_boost,
+            'policy_score': round(self.policy_score, 1),
+            'affected_sectors': self.affected_sectors,
+            'relevant_policies': self.relevant_policies[:3],
         }
 
 
@@ -872,6 +896,22 @@ class FundamentalEnhancer:
             except Exception as e:
                 self.logger.warning(f"Error initializing sentiment analyzer: {e}")
 
+        # Initialize macro/policy analyzer
+        self.macro_analyzer = None
+        if use_live_news:
+            try:
+                from finagent.analysis.live_news_fetcher import MacroPolicyAnalyzer
+                self.macro_analyzer = MacroPolicyAnalyzer()
+                self.logger.info("Macro/Policy analyzer enabled")
+            except ImportError as e:
+                self.logger.debug(f"Could not load macro analyzer: {e}")
+            except Exception as e:
+                self.logger.debug(f"Error initializing macro analyzer: {e}")
+
+        # Cache for macro news (shared across all stocks)
+        self._macro_news_cache = None
+        self._fii_dii_cache = None
+
     def _find_database(self, db_path: Optional[str] = None) -> Optional[str]:
         """Find the circulars database."""
         from pathlib import Path
@@ -1048,6 +1088,38 @@ class FundamentalEnhancer:
                     fundamental.news_sentiment = 'NEUTRAL'
                     fundamental.news_score = 0
                 fundamental.sentiment_method = 'Keyword'
+
+        # Add macro/policy impact analysis
+        if self.macro_analyzer:
+            try:
+                # Fetch macro news once and cache it
+                if self._macro_news_cache is None:
+                    self._macro_news_cache = self.macro_analyzer.fetch_macro_news(self.days_lookback)
+
+                # Get policy impact for this stock
+                policy_impact = self.macro_analyzer.get_policy_impact(ticker, self._macro_news_cache)
+                fundamental.has_policy_boost = policy_impact.get('has_policy_boost', False)
+                fundamental.policy_score = policy_impact.get('policy_score', 0.0)
+                fundamental.affected_sectors = policy_impact.get('affected_sectors', [])
+                fundamental.relevant_policies = policy_impact.get('relevant_policies', [])
+
+                # Get FII/DII sentiment (cached)
+                if self._fii_dii_cache is None:
+                    self._fii_dii_cache = self.macro_analyzer.get_fii_dii_sentiment()
+
+                fundamental.fii_sentiment = self._fii_dii_cache.get('fii_sentiment', 'NEUTRAL')
+                fundamental.dii_sentiment = self._fii_dii_cache.get('dii_sentiment', 'NEUTRAL')
+
+                # Calculate institutional score from FII/DII
+                fii_score = self._fii_dii_cache.get('fii_score', 0)
+                dii_score = self._fii_dii_cache.get('dii_score', 0)
+                fundamental.institutional_score = (fii_score + dii_score) / 2
+
+                self.logger.debug(f"{ticker}: Policy boost={fundamental.has_policy_boost}, "
+                                f"FII={fundamental.fii_sentiment}, DII={fundamental.dii_sentiment}")
+
+            except Exception as e:
+                self.logger.debug(f"Error getting macro/policy data for {ticker}: {e}")
 
         # Cache result
         self._catalyst_cache[ticker] = fundamental
@@ -1378,8 +1450,31 @@ class AdvancedSignalGenerator:
                 elif fundamental.earnings_surprise == 'MISS':
                     risks.append("Recent earnings miss")
 
-                # Calculate fundamental score
-                fundamental_score = fundamental.news_score + fundamental.pead_score
+                # Add institutional factors
+                if fundamental.fii_sentiment == 'BULLISH':
+                    reasons.append("FII sentiment: BULLISH (foreign buying)")
+                elif fundamental.fii_sentiment == 'BEARISH':
+                    risks.append("FII sentiment: BEARISH (foreign selling)")
+
+                if fundamental.dii_sentiment == 'BULLISH':
+                    reasons.append("DII sentiment: BULLISH (domestic buying)")
+                elif fundamental.dii_sentiment == 'BEARISH':
+                    risks.append("DII sentiment: BEARISH (domestic selling)")
+
+                # Add policy boost factors
+                if fundamental.has_policy_boost and fundamental.relevant_policies:
+                    policy_info = fundamental.relevant_policies[0]
+                    reasons.append(f"Policy boost: {policy_info.get('keyword', 'govt policy')} ({', '.join(fundamental.affected_sectors[:2])})")
+                elif fundamental.policy_score < -10:
+                    risks.append("Negative policy impact")
+
+                # Calculate fundamental score (now includes institutional + policy)
+                fundamental_score = (
+                    fundamental.news_score +
+                    fundamental.pead_score +
+                    fundamental.institutional_score * 0.5 +  # Moderate weight for institutional
+                    fundamental.policy_score * 0.3  # Lower weight for policy
+                )
 
         # Calculate combined score (70% technical, 30% fundamental)
         technical_score = min(abs(avg_score), 100)
@@ -1391,6 +1486,13 @@ class AdvancedSignalGenerator:
                 combined_score *= 1.15  # 15% boost for alignment
             elif (avg_score < 0 and fundamental.news_sentiment == 'BEARISH'):
                 combined_score *= 1.15
+
+        # Additional boost for institutional alignment
+        if fundamental:
+            if avg_score > 0 and fundamental.fii_sentiment == 'BULLISH':
+                combined_score *= 1.05  # 5% boost for FII alignment
+            if avg_score > 0 and fundamental.has_policy_boost:
+                combined_score *= 1.05  # 5% boost for policy tailwind
 
         return TechnicalSignal(
             ticker=ticker,

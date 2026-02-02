@@ -1921,7 +1921,9 @@ def scan(
         table.add_column("Signal", justify="center", width=12)
         table.add_column("Tech", justify="right", width=5)
         if fundamentals:
-            table.add_column("News", justify="center", width=8)
+            table.add_column("News", justify="center", width=6)
+            table.add_column("FII", justify="center", width=5)
+            table.add_column("Pol", justify="center", width=4)
             table.add_column("Score", justify="right", width=6)
         table.add_column("Price", justify="right", width=10)
         table.add_column("Target", justify="right", width=10)
@@ -1946,6 +1948,29 @@ def scan(
                     row.append(f"[{sent_color}]{sentiment[:4]}[/{sent_color}]")
                 else:
                     row.append("[dim]--[/dim]")
+
+                # FII sentiment (institutional)
+                if signal.fundamental:
+                    fii = getattr(signal.fundamental, 'fii_sentiment', 'NEUTRAL')
+                    fii_color = "green" if fii == "BULLISH" else ("red" if fii == "BEARISH" else "dim")
+                    fii_icon = "↑" if fii == "BULLISH" else ("↓" if fii == "BEARISH" else "-")
+                    row.append(f"[{fii_color}]{fii_icon}[/{fii_color}]")
+                else:
+                    row.append("[dim]-[/dim]")
+
+                # Policy boost indicator
+                if signal.fundamental:
+                    has_policy = getattr(signal.fundamental, 'has_policy_boost', False)
+                    policy_score = getattr(signal.fundamental, 'policy_score', 0)
+                    if has_policy:
+                        row.append("[green]✓[/green]")
+                    elif policy_score < -10:
+                        row.append("[red]✗[/red]")
+                    else:
+                        row.append("[dim]-[/dim]")
+                else:
+                    row.append("[dim]-[/dim]")
+
                 # Combined score
                 row.append(f"{signal.combined_score:.0f}")
 
@@ -2025,7 +2050,43 @@ def scan(
                     for headline in top.fundamental.recent_headlines[:3]:
                         console.print(f"      • {headline[:80]}...")
 
+                # Institutional Data Section
+                console.print(f"\n  [bold blue]Institutional & Macro Data:[/bold blue]")
+
+                # FII/DII sentiment
+                fii_sent = getattr(top.fundamental, 'fii_sentiment', 'NEUTRAL')
+                dii_sent = getattr(top.fundamental, 'dii_sentiment', 'NEUTRAL')
+                fii_color = "green" if fii_sent == "BULLISH" else ("red" if fii_sent == "BEARISH" else "yellow")
+                dii_color = "green" if dii_sent == "BULLISH" else ("red" if dii_sent == "BEARISH" else "yellow")
+                inst_score = getattr(top.fundamental, 'institutional_score', 0)
+
+                console.print(f"    FII Sentiment: [{fii_color}]{fii_sent}[/{fii_color}] | "
+                            f"DII Sentiment: [{dii_color}]{dii_sent}[/{dii_color}] "
+                            f"(score: {inst_score:+.0f})")
+
+                # Policy impact
+                has_policy = getattr(top.fundamental, 'has_policy_boost', False)
+                policy_score = getattr(top.fundamental, 'policy_score', 0)
+                sectors = getattr(top.fundamental, 'affected_sectors', [])
+                policies = getattr(top.fundamental, 'relevant_policies', [])
+
+                if has_policy:
+                    console.print(f"    [green]Policy Boost: YES[/green] (score: {policy_score:+.0f})")
+                    if sectors:
+                        console.print(f"    Affected Sectors: {', '.join(sectors[:3])}")
+                    if policies:
+                        console.print(f"\n    [bold]Relevant Govt Policies/News:[/bold]")
+                        for policy in policies[:3]:
+                            pol_sent = policy.get('sentiment', 'NEUTRAL')
+                            pol_color = "green" if pol_sent == "POSITIVE" else "red"
+                            console.print(f"      [{pol_color}]{policy.get('keyword', 'policy').title()}[/{pol_color}]: {policy.get('headline', '')[:60]}...")
+                elif policy_score < -10:
+                    console.print(f"    [red]Policy Impact: NEGATIVE[/red] (score: {policy_score:+.0f})")
+                else:
+                    console.print(f"    Policy Impact: Neutral")
+
                 console.print(f"\n    [dim]Combined Score (70% tech + 30% fundamental): {top.combined_score:.0f}[/dim]")
+                console.print(f"    [dim]Breakdown: News({top.fundamental.news_score:+.0f}) + PEAD({top.fundamental.pead_score:+.0f}) + Inst({inst_score:+.0f}) + Policy({policy_score:+.0f})[/dim]")
 
         # Disclaimer
         console.print(f"\n[dim]Disclaimer: Technical analysis is not financial advice. Always do your own research.[/dim]")

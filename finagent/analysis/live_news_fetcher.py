@@ -689,8 +689,447 @@ class LiveNewsFetcher:
         self._cache_time.clear()
 
 
-# Singleton instance for reuse
-_fetcher_instance = None
+# ============================================================================
+# MACRO/POLICY NEWS AND SECTOR IMPACT ANALYSIS
+# ============================================================================
+
+# Sector-Policy Mappings: Keywords in news that benefit specific sectors
+POLICY_SECTOR_MAPPINGS = {
+    # Infrastructure & Construction
+    "infrastructure": ["infra", "construction", "cement", "steel"],
+    "highway": ["infra", "construction", "cement"],
+    "smart city": ["infra", "realestate", "it"],
+    "metro": ["infra", "construction", "capital_goods"],
+    "railway": ["infra", "railway", "capital_goods"],
+    "port": ["infra", "logistics", "shipping"],
+    "airport": ["infra", "aviation"],
+
+    # Energy & Power
+    "solar": ["renewable", "power", "capital_goods"],
+    "wind energy": ["renewable", "power"],
+    "renewable energy": ["renewable", "power"],
+    "green hydrogen": ["renewable", "power", "chemicals"],
+    "electric vehicle": ["auto", "ev", "power"],
+    "ev policy": ["auto", "ev", "battery"],
+    "battery": ["ev", "chemicals", "power"],
+    "power grid": ["power", "capital_goods"],
+
+    # Technology & Digital
+    "data center": ["it", "power", "realestate"],
+    "digital india": ["it", "telecom", "fintech"],
+    "semiconductor": ["it", "electronics", "capital_goods"],
+    "chip manufacturing": ["it", "electronics", "capital_goods"],
+    "5g": ["telecom", "it"],
+    "ai artificial intelligence": ["it"],
+    "cloud computing": ["it"],
+    "cybersecurity": ["it"],
+
+    # Manufacturing & PLI
+    "pli scheme": ["manufacturing", "electronics", "pharma", "auto"],
+    "make in india": ["manufacturing", "capital_goods"],
+    "electronics manufacturing": ["electronics", "it"],
+    "mobile manufacturing": ["electronics", "telecom"],
+    "defence manufacturing": ["defence", "capital_goods"],
+    "textile pli": ["textile"],
+    "pharma pli": ["pharma"],
+    "auto pli": ["auto"],
+
+    # Commodities & Mining
+    "rare earth": ["metals", "mining"],
+    "lithium": ["metals", "ev", "battery"],
+    "copper": ["metals", "power"],
+    "steel duty": ["metals", "steel"],
+    "iron ore": ["metals", "mining", "steel"],
+    "coal": ["power", "mining", "metals"],
+    "mining policy": ["metals", "mining"],
+    "import duty metal": ["metals", "steel"],
+    "export duty": ["metals", "chemicals"],
+
+    # Financial & Banking
+    "rbi policy": ["banking", "nbfc", "fintech"],
+    "interest rate": ["banking", "nbfc", "realestate"],
+    "repo rate": ["banking", "nbfc", "realestate"],
+    "banking reform": ["banking", "nbfc"],
+    "insurance": ["insurance"],
+    "pension": ["insurance", "amc"],
+    "gst": ["fmcg", "auto", "cement"],
+    "tax cut": ["all"],
+    "fiscal stimulus": ["infra", "banking", "fmcg"],
+
+    # Agriculture & FMCG
+    "msp": ["agri", "fmcg", "fertilizer"],
+    "fertilizer subsidy": ["fertilizer", "agri", "chemicals"],
+    "food processing": ["fmcg", "agri"],
+    "rural development": ["agri", "fmcg", "tractor"],
+    "irrigation": ["agri", "infra", "capital_goods"],
+    "cold chain": ["agri", "fmcg", "logistics"],
+
+    # Healthcare & Pharma
+    "healthcare": ["pharma", "hospitals"],
+    "ayushman bharat": ["pharma", "hospitals", "insurance"],
+    "medical device": ["pharma", "healthcare"],
+    "bulk drug": ["pharma", "chemicals"],
+    "api manufacturing": ["pharma", "chemicals"],
+
+    # Real Estate & Housing
+    "housing for all": ["realestate", "cement", "steel"],
+    "affordable housing": ["realestate", "cement", "nbfc"],
+    "rera": ["realestate"],
+    "stamp duty": ["realestate"],
+    "real estate": ["realestate", "cement", "steel", "nbfc"],
+
+    # Defence & Aerospace
+    "defence budget": ["defence", "capital_goods"],
+    "defence order": ["defence"],
+    "atmanirbhar defence": ["defence", "capital_goods"],
+    "aircraft": ["defence", "aviation"],
+    "navy order": ["defence", "shipping"],
+
+    # Environment & ESG
+    "carbon credit": ["renewable", "power"],
+    "pollution control": ["chemicals", "capital_goods"],
+    "esg": ["all"],
+    "green bond": ["renewable", "banking"],
+}
+
+# Sector to Stock Mappings (key stocks in each sector)
+SECTOR_STOCKS = {
+    "infra": ["LT.NS", "LTIM.NS", "KEC.NS", "KNRCON.NS", "IRB.NS", "NBCC.NS", "NCC.NS", "PNCINFRA.NS"],
+    "construction": ["LT.NS", "NBCC.NS", "NCC.NS", "PNCINFRA.NS", "ASHOKA.NS", "CAPACITE.NS"],
+    "cement": ["ULTRACEMCO.NS", "SHREECEM.NS", "AMBUJACEM.NS", "ACC.NS", "RAMCOCEM.NS", "DALBHARAT.NS", "JKCEMENT.NS"],
+    "steel": ["TATASTEEL.NS", "JSWSTEEL.NS", "JINDALSTEL.NS", "SAIL.NS", "NMDC.NS"],
+
+    "power": ["NTPC.NS", "POWERGRID.NS", "TATAPOWER.NS", "ADANIGREEN.NS", "NHPC.NS", "SJVN.NS", "CESC.NS"],
+    "renewable": ["ADANIGREEN.NS", "TATAPOWER.NS", "NHPC.NS", "SJVN.NS", "SWSOLAR.NS", "INOXGREEN.NS"],
+
+    "it": ["TCS.NS", "INFY.NS", "WIPRO.NS", "HCLTECH.NS", "TECHM.NS", "LTIM.NS", "COFORGE.NS", "PERSISTENT.NS", "MPHASIS.NS"],
+    "telecom": ["BHARTIARTL.NS", "IDEA.NS", "INDUSTOWER.NS"],
+    "electronics": ["DIXON.NS", "AMBER.NS", "KAYNES.NS", "TATAELXSI.NS", "DATAMATICS.NS"],
+
+    "auto": ["TATAMOTORS.NS", "MARUTI.NS", "M&M.NS", "BAJAJ-AUTO.NS", "HEROMOTOCO.NS", "EICHERMOT.NS", "ASHOKLEY.NS", "TVSMOTOR.NS"],
+    "ev": ["TATAMOTORS.NS", "M&M.NS", "OLECTRA.NS", "TATAPOWER.NS", "EXIDEIND.NS"],
+    "tractor": ["M&M.NS", "ESCORTS.NS"],
+
+    "pharma": ["SUNPHARMA.NS", "DRREDDY.NS", "CIPLA.NS", "DIVISLAB.NS", "LUPIN.NS", "AUROPHARMA.NS", "BIOCON.NS", "TORNTPHARM.NS", "ZYDUSLIFE.NS"],
+    "hospitals": ["APOLLOHOSP.NS", "FORTIS.NS", "MAXHEALTH.NS", "MEDANTA.NS"],
+
+    "banking": ["HDFCBANK.NS", "ICICIBANK.NS", "SBIN.NS", "KOTAKBANK.NS", "AXISBANK.NS", "INDUSINDBK.NS", "BANKBARODA.NS", "PNB.NS"],
+    "nbfc": ["BAJFINANCE.NS", "BAJAJFINSV.NS", "CHOLAFIN.NS", "MUTHOOTFIN.NS", "MANAPPURAM.NS", "LICHSGFIN.NS", "POONAWALLA.NS"],
+    "fintech": ["PAYTM.NS", "POLICYBZR.NS"],
+    "insurance": ["HDFCLIFE.NS", "SBILIFE.NS", "ICICIPRULI.NS", "ICICIGI.NS", "STARHEALTH.NS"],
+    "amc": ["HDFCAMC.NS", "NAM-INDIA.NS", "UTIAMC.NS"],
+
+    "fmcg": ["HINDUNILVR.NS", "ITC.NS", "NESTLEIND.NS", "BRITANNIA.NS", "DABUR.NS", "MARICO.NS", "COLPAL.NS", "GODREJCP.NS", "TATACONSUM.NS", "VBL.NS"],
+
+    "metals": ["TATASTEEL.NS", "JSWSTEEL.NS", "HINDALCO.NS", "VEDL.NS", "JINDALSTEL.NS", "NMDC.NS", "NATIONALUM.NS", "HINDCOPPER.NS", "COALINDIA.NS"],
+    "mining": ["NMDC.NS", "COALINDIA.NS", "VEDL.NS", "MOIL.NS", "HINDCOPPER.NS"],
+
+    "chemicals": ["PIDILITIND.NS", "SRF.NS", "DEEPAKNTR.NS", "ATUL.NS", "NAVINFLUOR.NS", "ALKYLAMINE.NS", "CLEAN.NS", "AARTI.NS"],
+    "fertilizer": ["CHAMBLFERT.NS", "COROMANDEL.NS", "GNFC.NS", "GSFC.NS", "DEEPAKFERT.NS", "FACT.NS"],
+
+    "realestate": ["DLF.NS", "GODREJPROP.NS", "OBEROIRLTY.NS", "PRESTIGE.NS", "BRIGADE.NS", "SOBHA.NS", "PHOENIXLTD.NS", "LODHA.NS"],
+
+    "defence": ["HAL.NS", "BEL.NS", "BDL.NS", "MAZAGON.NS", "GRSE.NS", "COCHINSHIP.NS", "MIDHANI.NS"],
+
+    "capital_goods": ["LT.NS", "SIEMENS.NS", "ABB.NS", "BHEL.NS", "THERMAX.NS", "CGPOWER.NS", "CUMMINSIND.NS", "KEC.NS"],
+
+    "logistics": ["CONCOR.NS", "DELHIVERY.NS", "MAHLOG.NS", "ALLCARGO.NS", "GATEWAY.NS", "VRLLOG.NS"],
+    "shipping": ["COCHINSHIP.NS", "GRSE.NS", "GESHIP.NS"],
+    "aviation": ["INDIGO.NS", "SPICEJET.NS"],
+    "railway": ["IRCTC.NS", "IRFC.NS", "IRCON.NS", "RVNL.NS", "RAILTEL.NS", "TITAGARH.NS"],
+
+    "textile": ["RAYMOND.NS", "ARVIND.NS", "WELSPUNIND.NS", "TRIDENT.NS", "KPRMILL.NS"],
+
+    "agri": ["UPL.NS", "PIIND.NS", "BAYER.NS", "RALLIS.NS"],
+    "battery": ["EXIDEIND.NS", "AMARAJABAT.NS"],
+}
+
+
+class MacroPolicyAnalyzer:
+    """
+    Analyzes macro/policy news and its impact on stocks.
+
+    Fetches:
+    - Government policy announcements
+    - Budget news
+    - RBI policy updates
+    - Ministry announcements
+    - Global macro events affecting Indian markets
+    """
+
+    # Cache for macro news
+    _macro_cache: Dict[str, List[NewsItem]] = {}
+    _macro_cache_time: Optional[datetime] = None
+    _macro_cache_ttl = timedelta(hours=1)  # Cache macro news for 1 hour
+
+    # Search queries for macro news
+    MACRO_NEWS_QUERIES = [
+        "India government policy economy",
+        "India budget announcement",
+        "RBI monetary policy India",
+        "India ministry scheme announcement",
+        "PLI scheme India",
+        "India infrastructure investment",
+        "India tax policy changes",
+        "FII DII investment India",
+    ]
+
+    def __init__(self):
+        self.logger = logging.getLogger(__name__)
+
+    def fetch_macro_news(self, days_back: int = 7) -> List[NewsItem]:
+        """Fetch macro/policy news from Google News RSS."""
+        # Check cache
+        if (self._macro_cache_time and
+            datetime.now() - self._macro_cache_time < self._macro_cache_ttl and
+            "macro" in self._macro_cache):
+            return self._macro_cache["macro"]
+
+        all_news = []
+
+        try:
+            import httpx
+        except ImportError:
+            self.logger.warning("httpx not installed, macro news disabled")
+            return []
+
+        for query in self.MACRO_NEWS_QUERIES[:4]:  # Limit queries to avoid rate limiting
+            try:
+                encoded_query = quote_plus(query)
+                url = f"https://news.google.com/rss/search?q={encoded_query}&hl=en-IN&gl=IN&ceid=IN:en"
+
+                with httpx.Client(timeout=10.0, follow_redirects=True) as client:
+                    response = client.get(url)
+
+                    if response.status_code == 200:
+                        root = ET.fromstring(response.text)
+                        items = root.findall('.//item')
+
+                        cutoff_date = datetime.now() - timedelta(days=days_back)
+
+                        for item in items[:10]:  # Take top 10 per query
+                            title = item.find('title')
+                            description = item.find('description')
+                            pub_date = item.find('pubDate')
+                            link = item.find('link')
+
+                            if title is not None:
+                                pub_datetime = None
+                                if pub_date is not None and pub_date.text:
+                                    try:
+                                        pub_datetime = datetime.strptime(
+                                            pub_date.text,
+                                            "%a, %d %b %Y %H:%M:%S %Z"
+                                        )
+                                    except ValueError:
+                                        pass
+
+                                # Filter by date
+                                if pub_datetime and pub_datetime < cutoff_date:
+                                    continue
+
+                                news_item = NewsItem(
+                                    title=title.text or "",
+                                    description=description.text if description is not None else "",
+                                    source="Google News (Macro)",
+                                    published_date=pub_datetime,
+                                    url=link.text if link is not None else "",
+                                    ticker="MACRO"
+                                )
+                                all_news.append(news_item)
+
+                # Small delay between queries
+                import time
+                time.sleep(0.5)
+
+            except Exception as e:
+                self.logger.debug(f"Error fetching macro news for '{query}': {e}")
+
+        # Deduplicate
+        seen_titles = set()
+        unique_news = []
+        for item in all_news:
+            title_key = item.title.lower()[:50]
+            if title_key not in seen_titles:
+                seen_titles.add(title_key)
+                unique_news.append(item)
+
+        # Cache results
+        self._macro_cache["macro"] = unique_news
+        self._macro_cache_time = datetime.now()
+
+        return unique_news
+
+    def get_policy_impact(self, ticker: str, macro_news: List[NewsItem] = None) -> Dict[str, Any]:
+        """
+        Analyze if recent policy news benefits a specific stock.
+
+        Returns:
+            Dict with:
+            - has_policy_boost: bool
+            - policy_score: float (-50 to +50)
+            - relevant_policies: List of policy headlines
+            - affected_sectors: List of sectors
+        """
+        result = {
+            "has_policy_boost": False,
+            "policy_score": 0.0,
+            "relevant_policies": [],
+            "affected_sectors": [],
+        }
+
+        # Get macro news if not provided
+        if macro_news is None:
+            macro_news = self.fetch_macro_news()
+
+        if not macro_news:
+            return result
+
+        # Normalize ticker
+        base_ticker = ticker.replace(".NS", "").replace(".BO", "").upper()
+
+        # Find which sectors this stock belongs to
+        stock_sectors = []
+        for sector, stocks in SECTOR_STOCKS.items():
+            normalized_stocks = [s.replace(".NS", "").replace(".BO", "").upper() for s in stocks]
+            if base_ticker in normalized_stocks:
+                stock_sectors.append(sector)
+
+        if not stock_sectors:
+            return result
+
+        result["affected_sectors"] = stock_sectors
+
+        # Analyze each news item for policy keywords
+        policy_score = 0.0
+        relevant_policies = []
+
+        for news in macro_news:
+            news_text = (news.title + " " + news.description).lower()
+
+            # Check each policy keyword
+            for keyword, affected_sectors in POLICY_SECTOR_MAPPINGS.items():
+                if keyword.lower() in news_text:
+                    # Check if any of our stock's sectors are affected
+                    matching_sectors = set(stock_sectors) & set(affected_sectors)
+                    if matching_sectors or "all" in affected_sectors:
+                        # Determine if positive or negative
+                        positive_words = ["boost", "increase", "rise", "benefit", "growth",
+                                        "approve", "launch", "invest", "expand", "cut tax",
+                                        "reduce duty", "support", "promote", "incentive"]
+                        negative_words = ["cut", "reduce", "decline", "restrict", "ban",
+                                        "hike duty", "increase tax", "impose", "limit"]
+
+                        is_positive = any(pw in news_text for pw in positive_words)
+                        is_negative = any(nw in news_text for nw in negative_words)
+
+                        if is_positive and not is_negative:
+                            policy_score += 10.0
+                            relevant_policies.append({
+                                "headline": news.title[:100],
+                                "keyword": keyword,
+                                "sectors": list(matching_sectors) if matching_sectors else ["all"],
+                                "sentiment": "POSITIVE"
+                            })
+                        elif is_negative and not is_positive:
+                            policy_score -= 10.0
+                            relevant_policies.append({
+                                "headline": news.title[:100],
+                                "keyword": keyword,
+                                "sectors": list(matching_sectors) if matching_sectors else ["all"],
+                                "sentiment": "NEGATIVE"
+                            })
+
+        # Cap the score
+        result["policy_score"] = max(-50.0, min(50.0, policy_score))
+        result["has_policy_boost"] = policy_score > 0
+        result["relevant_policies"] = relevant_policies[:5]  # Top 5
+
+        return result
+
+    def get_fii_dii_sentiment(self) -> Dict[str, Any]:
+        """Get overall FII/DII sentiment from news."""
+        result = {
+            "fii_sentiment": "NEUTRAL",
+            "dii_sentiment": "NEUTRAL",
+            "fii_score": 0.0,
+            "dii_score": 0.0,
+            "headlines": []
+        }
+
+        # Fetch FII/DII specific news
+        try:
+            import httpx
+
+            query = "FII DII India stock market investment"
+            encoded_query = quote_plus(query)
+            url = f"https://news.google.com/rss/search?q={encoded_query}&hl=en-IN&gl=IN&ceid=IN:en"
+
+            with httpx.Client(timeout=10.0, follow_redirects=True) as client:
+                response = client.get(url)
+
+                if response.status_code == 200:
+                    root = ET.fromstring(response.text)
+                    items = root.findall('.//item')
+
+                    fii_score = 0.0
+                    dii_score = 0.0
+
+                    for item in items[:15]:
+                        title = item.find('title')
+                        if title is not None and title.text:
+                            text = title.text.lower()
+
+                            # FII analysis
+                            if "fii" in text or "foreign" in text:
+                                if any(w in text for w in ["buy", "bought", "inflow", "bullish", "positive"]):
+                                    fii_score += 10
+                                    result["headlines"].append(f"FII+: {title.text[:80]}")
+                                elif any(w in text for w in ["sell", "sold", "outflow", "bearish", "negative"]):
+                                    fii_score -= 10
+                                    result["headlines"].append(f"FII-: {title.text[:80]}")
+
+                            # DII analysis
+                            if "dii" in text or "domestic" in text:
+                                if any(w in text for w in ["buy", "bought", "inflow", "bullish", "positive"]):
+                                    dii_score += 10
+                                    result["headlines"].append(f"DII+: {title.text[:80]}")
+                                elif any(w in text for w in ["sell", "sold", "outflow", "bearish", "negative"]):
+                                    dii_score -= 10
+                                    result["headlines"].append(f"DII-: {title.text[:80]}")
+
+                    # Determine sentiment
+                    result["fii_score"] = max(-50, min(50, fii_score))
+                    result["dii_score"] = max(-50, min(50, dii_score))
+
+                    if fii_score > 10:
+                        result["fii_sentiment"] = "BULLISH"
+                    elif fii_score < -10:
+                        result["fii_sentiment"] = "BEARISH"
+
+                    if dii_score > 10:
+                        result["dii_sentiment"] = "BULLISH"
+                    elif dii_score < -10:
+                        result["dii_sentiment"] = "BEARISH"
+
+                    result["headlines"] = result["headlines"][:5]
+
+        except Exception as e:
+            self.logger.debug(f"Error fetching FII/DII news: {e}")
+
+        return result
+
+
+# Singleton instance
+_macro_analyzer_instance = None
+
+
+def get_macro_analyzer() -> MacroPolicyAnalyzer:
+    """Get singleton MacroPolicyAnalyzer instance."""
+    global _macro_analyzer_instance
+    if _macro_analyzer_instance is None:
+        _macro_analyzer_instance = MacroPolicyAnalyzer()
+    return _macro_analyzer_instance
 
 
 def get_live_news_fetcher() -> LiveNewsFetcher:
