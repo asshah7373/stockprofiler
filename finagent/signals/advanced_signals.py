@@ -1367,19 +1367,22 @@ class AdvancedSignalGenerator:
         # Adjust targets based on holding period
         hold_multiplier = np.sqrt(hold_days / 7)  # Scale with sqrt of time
 
+        # Use more conservative ATR multipliers for realistic targets
+        # Previous: 2/3/4 ATR (too aggressive, led to 30% win rate)
+        # Updated: 1.5/2/2.5 ATR (more achievable in 7-day horizon)
         if direction in [SignalDirection.STRONG_BUY, SignalDirection.BUY]:
             entry = current_price
-            stop_loss = current_price - (2 * atr)
-            target_1 = current_price + (2 * atr * hold_multiplier)
-            target_2 = current_price + (3 * atr * hold_multiplier)
-            target_3 = current_price + (4 * atr * hold_multiplier)
+            stop_loss = current_price - (1.5 * atr)
+            target_1 = current_price + (1.5 * atr * hold_multiplier)
+            target_2 = current_price + (2.0 * atr * hold_multiplier)
+            target_3 = current_price + (2.5 * atr * hold_multiplier)
             expected_return = ((target_2 - entry) / entry) * 100
         else:
             entry = current_price
-            stop_loss = current_price + (2 * atr)
-            target_1 = current_price - (2 * atr * hold_multiplier)
-            target_2 = current_price - (3 * atr * hold_multiplier)
-            target_3 = current_price - (4 * atr * hold_multiplier)
+            stop_loss = current_price + (1.5 * atr)
+            target_1 = current_price - (1.5 * atr * hold_multiplier)
+            target_2 = current_price - (2.0 * atr * hold_multiplier)
+            target_3 = current_price - (2.5 * atr * hold_multiplier)
             expected_return = ((entry - target_2) / entry) * 100
 
         # Risk/Reward
@@ -1450,16 +1453,17 @@ class AdvancedSignalGenerator:
                 elif fundamental.earnings_surprise == 'MISS':
                     risks.append("Recent earnings miss")
 
-                # Add institutional factors
+                # Add institutional factors (market-wide sentiment, not stock-specific)
+                # Note: FII/DII flows are for entire market, providing macro context
                 if fundamental.fii_sentiment == 'BULLISH':
-                    reasons.append("FII sentiment: BULLISH (foreign buying)")
+                    reasons.append("Market FII flow: BULLISH (overall foreign buying)")
                 elif fundamental.fii_sentiment == 'BEARISH':
-                    risks.append("FII sentiment: BEARISH (foreign selling)")
+                    risks.append("Market FII flow: BEARISH (overall foreign selling)")
 
                 if fundamental.dii_sentiment == 'BULLISH':
-                    reasons.append("DII sentiment: BULLISH (domestic buying)")
+                    reasons.append("Market DII flow: BULLISH (overall domestic buying)")
                 elif fundamental.dii_sentiment == 'BEARISH':
-                    risks.append("DII sentiment: BEARISH (domestic selling)")
+                    risks.append("Market DII flow: BEARISH (overall domestic selling)")
 
                 # Add policy boost factors
                 if fundamental.has_policy_boost and fundamental.relevant_policies:
@@ -1469,11 +1473,12 @@ class AdvancedSignalGenerator:
                     risks.append("Negative policy impact")
 
                 # Calculate fundamental score (now includes institutional + policy)
+                # Note: institutional_score is market-wide, so lower weight to avoid overfit
                 fundamental_score = (
                     fundamental.news_score +
                     fundamental.pead_score +
-                    fundamental.institutional_score * 0.5 +  # Moderate weight for institutional
-                    fundamental.policy_score * 0.3  # Lower weight for policy
+                    fundamental.institutional_score * 0.2 +  # Lower weight (market-wide, not stock-specific)
+                    fundamental.policy_score * 0.2  # Lower weight for policy
                 )
 
         # Calculate combined score (70% technical, 30% fundamental)
@@ -1487,12 +1492,12 @@ class AdvancedSignalGenerator:
             elif (avg_score < 0 and fundamental.news_sentiment == 'BEARISH'):
                 combined_score *= 1.15
 
-        # Additional boost for institutional alignment
+        # Additional boost for institutional alignment (reduced - FII/DII is market-wide)
         if fundamental:
             if avg_score > 0 and fundamental.fii_sentiment == 'BULLISH':
-                combined_score *= 1.05  # 5% boost for FII alignment
+                combined_score *= 1.02  # 2% boost for FII alignment (market-wide only)
             if avg_score > 0 and fundamental.has_policy_boost:
-                combined_score *= 1.05  # 5% boost for policy tailwind
+                combined_score *= 1.03  # 3% boost for policy tailwind
 
         return TechnicalSignal(
             ticker=ticker,
@@ -1789,7 +1794,7 @@ BSE_ADDITIONAL = [
     "INFY.BO", "IOC.BO", "ITC.BO", "JSWSTEEL.BO", "KOTAKBANK.BO",
     "LT.BO", "MARUTI.BO", "NESTLEIND.BO", "NTPC.BO", "ONGC.BO",
     "POWERGRID.BO", "RELIANCE.BO", "SBIN.BO", "SBILIFE.BO", "SHREECEM.BO",
-    "SUNPHARMA.BO", "TATACONSUM.BO", "TATAMOTORS.BO", "TATASTEEL.BO", "TCS.BO",
+    "SUNPHARMA.BO", "TATACONSUM.BO", "TATASTEEL.BO", "TCS.BO",  # Removed TATAMOTORS.BO (use .NS)
     "TECHM.BO", "TITAN.BO", "ULTRACEMCO.BO", "UPL.BO", "WIPRO.BO",
 ]
 

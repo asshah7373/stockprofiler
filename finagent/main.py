@@ -2052,17 +2052,18 @@ def scan(
 
                 # Institutional Data Section
                 console.print(f"\n  [bold blue]Institutional & Macro Data:[/bold blue]")
+                console.print(f"    [dim](Note: FII/DII is MARKET-WIDE sentiment, not stock-specific)[/dim]")
 
-                # FII/DII sentiment
+                # FII/DII sentiment (market-wide)
                 fii_sent = getattr(top.fundamental, 'fii_sentiment', 'NEUTRAL')
                 dii_sent = getattr(top.fundamental, 'dii_sentiment', 'NEUTRAL')
                 fii_color = "green" if fii_sent == "BULLISH" else ("red" if fii_sent == "BEARISH" else "yellow")
                 dii_color = "green" if dii_sent == "BULLISH" else ("red" if dii_sent == "BEARISH" else "yellow")
                 inst_score = getattr(top.fundamental, 'institutional_score', 0)
 
-                console.print(f"    FII Sentiment: [{fii_color}]{fii_sent}[/{fii_color}] | "
-                            f"DII Sentiment: [{dii_color}]{dii_sent}[/{dii_color}] "
-                            f"(score: {inst_score:+.0f})")
+                console.print(f"    Market FII Flow: [{fii_color}]{fii_sent}[/{fii_color}] | "
+                            f"Market DII Flow: [{dii_color}]{dii_sent}[/{dii_color}] "
+                            f"(weight: {inst_score:+.0f})")
 
                 # Policy impact
                 has_policy = getattr(top.fundamental, 'has_policy_boost', False)
@@ -2086,7 +2087,7 @@ def scan(
                     console.print(f"    Policy Impact: Neutral")
 
                 console.print(f"\n    [dim]Combined Score (70% tech + 30% fundamental): {top.combined_score:.0f}[/dim]")
-                console.print(f"    [dim]Breakdown: News({top.fundamental.news_score:+.0f}) + PEAD({top.fundamental.pead_score:+.0f}) + Inst({inst_score:+.0f}) + Policy({policy_score:+.0f})[/dim]")
+                console.print(f"    [dim]Breakdown: News({top.fundamental.news_score:+.0f}) + PEAD({top.fundamental.pead_score:+.0f}) + Inst({inst_score*0.2:+.0f}) + Policy({policy_score*0.2:+.0f})[/dim]")
 
         # Disclaimer
         console.print(f"\n[dim]Disclaimer: Technical analysis is not financial advice. Always do your own research.[/dim]")
