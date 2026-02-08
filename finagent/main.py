@@ -1753,6 +1753,8 @@ def scan(
     ticker: Optional[str] = typer.Option(None, "--ticker", "-t", help="Scan single ticker"),
     fundamentals: bool = typer.Option(True, "--fundamentals/--no-fundamentals", help="Include NSE circulars/news data"),
     news_days: int = typer.Option(30, "--news-days", help="Days to look back for news/circulars"),
+    quality_filter: bool = typer.Option(False, "--quality", "-q", help="Filter by fundamental quality (EPS growth, PEG, ROE, debt)"),
+    min_quality: float = typer.Option(40.0, "--min-quality", help="Minimum quality score (0-100) when --quality enabled"),
     output_json: bool = typer.Option(False, "--json", "-j", help="Output as JSON"),
     verbose: bool = typer.Option(False, "--verbose", "-v", help="Show debug output including news fetching")
 ):
@@ -1776,6 +1778,15 @@ def scan(
     - Dividends, buybacks, partnerships
     - Rating changes and analyst views
 
+    Quality Screening (--quality flag):
+    - EPS growth (3-year consistency)
+    - Revenue growth (sustainable, not just cost cuts)
+    - PEG ratio (valuation vs growth, <1 is attractive)
+    - Debt/Equity ratio (low leverage preferred)
+    - ROE (profitability check)
+    - Profit margins (sustainable business)
+    Note: Low PEG may reflect cyclical upswing, not sustainable growth.
+
     Stock Universes:
     - nifty50: Top 50 stocks by market cap
     - nifty100: Top 100 stocks
@@ -1792,6 +1803,8 @@ def scan(
         finagent scan --no-fundamentals         # Technical only (faster)
         finagent scan --ticker RELIANCE.NS      # Scan single stock
         finagent scan --news-days 7             # Only recent news (7 days)
+        finagent scan --quality                 # Filter by quality (EPS, PEG, ROE)
+        finagent scan --quality --min-quality 60  # Only high-quality stocks
     """
     from rich.panel import Panel
     from rich.table import Table
@@ -1896,6 +1909,16 @@ def scan(
         elif direction.lower() == "sell":
             signals = [s for s in signals if s.direction in [SignalDirection.STRONG_SELL, SignalDirection.SELL]]
 
+        # Filter by quality if enabled
+        if quality_filter and fundamentals:
+            pre_quality_count = len(signals)
+            signals = [
+                s for s in signals
+                if s.fundamental and s.fundamental.passes_quality
+                and s.fundamental.quality_score >= min_quality
+            ]
+            console.print(f"[dim]Quality filter: {pre_quality_count} → {len(signals)} stocks (min score: {min_quality})[/dim]")
+
         if output_json:
             import json
             console.print(json.dumps([s.to_dict() for s in signals[:count]], indent=2))
@@ -1924,6 +1947,7 @@ def scan(
             table.add_column("News", justify="center", width=6)
             table.add_column("FII", justify="center", width=5)
             table.add_column("Pol", justify="center", width=4)
+            table.add_column("Qual", justify="center", width=5)  # Quality score
             table.add_column("Score", justify="right", width=6)
         table.add_column("Price", justify="right", width=10)
         table.add_column("Target", justify="right", width=10)
@@ -1970,6 +1994,22 @@ def scan(
                         row.append("[dim]-[/dim]")
                 else:
                     row.append("[dim]-[/dim]")
+
+                # Quality score
+                if signal.fundamental:
+                    quality = getattr(signal.fundamental, 'quality_score', 0)
+                    passes = getattr(signal.fundamental, 'passes_quality', True)
+                    if quality >= 60:
+                        row.append(f"[green]{quality:.0f}[/green]")
+                    elif quality >= 40:
+                        row.append(f"[yellow]{quality:.0f}[/yellow]")
+                    elif quality > 0:
+                        q_color = "red" if not passes else "dim"
+                        row.append(f"[{q_color}]{quality:.0f}[/{q_color}]")
+                    else:
+                        row.append("[dim]--[/dim]")
+                else:
+                    row.append("[dim]--[/dim]")
 
                 # Combined score
                 row.append(f"{signal.combined_score:.0f}")
@@ -2086,11 +2126,57 @@ def scan(
                 else:
                     console.print(f"    Policy Impact: Neutral")
 
+                # Quality Metrics Section
+                quality_score = getattr(top.fundamental, 'quality_score', 0)
+                if quality_score > 0:
+                    console.print(f"\n  [bold magenta]Fundamental Quality (Screener):[/bold magenta]")
+                    q_color = "green" if quality_score >= 60 else ("yellow" if quality_score >= 40 else "red")
+                    passes = getattr(top.fundamental, 'passes_quality', True)
+                    pass_str = "[green]✓ Passes[/green]" if passes else "[red]✗ Fails[/red]"
+                    console.print(f"    Quality Score: [{q_color}]{quality_score:.0f}/100[/{q_color}] {pass_str}")
+
+                    # Show key metrics
+                    peg = getattr(top.fundamental, 'peg_ratio', None)
+                    roe = getattr(top.fundamental, 'roe', None)
+                    de = getattr(top.fundamental, 'debt_to_equity', None)
+                    margin = getattr(top.fundamental, 'profit_margin', None)
+                    eps_g = getattr(top.fundamental, 'eps_growth_3y', None)
+                    mcap = getattr(top.fundamental, 'market_cap_cr', None)
+
+                    metrics_line = []
+                    if peg is not None:
+                        peg_color = "green" if peg < 1 else ("yellow" if peg < 2 else "red")
+                        metrics_line.append(f"PEG: [{peg_color}]{peg:.1f}[/{peg_color}]")
+                    if roe is not None:
+                        roe_color = "green" if roe >= 18 else ("yellow" if roe >= 12 else "dim")
+                        metrics_line.append(f"ROE: [{roe_color}]{roe:.0f}%[/{roe_color}]")
+                    if de is not None:
+                        de_color = "green" if de < 0.5 else ("yellow" if de < 1.5 else "red")
+                        metrics_line.append(f"D/E: [{de_color}]{de:.1f}[/{de_color}]")
+                    if margin is not None:
+                        m_color = "green" if margin >= 15 else ("yellow" if margin >= 5 else "red")
+                        metrics_line.append(f"Margin: [{m_color}]{margin:.0f}%[/{m_color}]")
+                    if metrics_line:
+                        console.print(f"    {' | '.join(metrics_line)}")
+
+                    if eps_g is not None:
+                        eps_color = "green" if eps_g >= 15 else ("yellow" if eps_g >= 0 else "red")
+                        console.print(f"    EPS Growth: [{eps_color}]{eps_g:+.0f}%[/{eps_color}]")
+                    if mcap is not None:
+                        console.print(f"    Market Cap: ₹{mcap:,.0f} Cr")
+
+                    # Quality flags
+                    flags = getattr(top.fundamental, 'quality_flags', [])
+                    if flags:
+                        console.print(f"    Flags: {', '.join(flags[:3])}")
+
                 console.print(f"\n    [dim]Combined Score (70% tech + 30% fundamental): {top.combined_score:.0f}[/dim]")
-                console.print(f"    [dim]Breakdown: News({top.fundamental.news_score:+.0f}) + PEAD({top.fundamental.pead_score:+.0f}) + Inst({inst_score*0.2:+.0f}) + Policy({policy_score*0.2:+.0f})[/dim]")
+                quality_contrib = quality_score * 0.3 if quality_score > 0 else 0
+                console.print(f"    [dim]Breakdown: News({top.fundamental.news_score:+.0f}) + PEAD({top.fundamental.pead_score:+.0f}) + Inst({inst_score*0.2:+.0f}) + Policy({policy_score*0.2:+.0f}) + Quality({quality_contrib:+.0f})[/dim]")
 
         # Disclaimer
         console.print(f"\n[dim]Disclaimer: Technical analysis is not financial advice. Always do your own research.[/dim]")
+        console.print(f"[dim]Note on PEG: Low PEG (<1) may reflect cyclical upswing, not sustainable growth.[/dim]")
 
     except Exception as e:
         console.print(f"[red]Error: {e}[/red]")

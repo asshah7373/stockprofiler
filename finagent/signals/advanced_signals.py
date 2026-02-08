@@ -60,6 +60,18 @@ class FundamentalData:
     affected_sectors: List[str] = field(default_factory=list)
     relevant_policies: List[Dict[str, Any]] = field(default_factory=list)
 
+    # Quality metrics (fundamental screener criteria)
+    quality_score: float = 0.0  # 0 to 100
+    passes_quality: bool = True  # Passes minimum quality checks
+    eps_growth_3y: Optional[float] = None  # 3-year EPS CAGR %
+    revenue_growth_3y: Optional[float] = None  # 3-year revenue CAGR %
+    peg_ratio: Optional[float] = None  # P/E divided by growth rate
+    debt_to_equity: Optional[float] = None
+    roe: Optional[float] = None  # Return on Equity %
+    profit_margin: Optional[float] = None  # Net profit margin %
+    market_cap_cr: Optional[float] = None  # Market cap in Crores
+    quality_flags: List[str] = field(default_factory=list)  # Quality issues/highlights
+
     def to_dict(self) -> Dict:
         return {
             'has_recent_news': self.has_recent_news,
@@ -81,6 +93,13 @@ class FundamentalData:
             'policy_score': round(self.policy_score, 1),
             'affected_sectors': self.affected_sectors,
             'relevant_policies': self.relevant_policies[:3],
+            # Quality
+            'quality_score': round(self.quality_score, 1),
+            'passes_quality': self.passes_quality,
+            'peg_ratio': round(self.peg_ratio, 2) if self.peg_ratio else None,
+            'roe': round(self.roe, 1) if self.roe else None,
+            'debt_to_equity': round(self.debt_to_equity, 2) if self.debt_to_equity else None,
+            'quality_flags': self.quality_flags,
         }
 
 
@@ -845,6 +864,232 @@ class AdvancedIndicators:
         return self._ema(tr, period)
 
 
+class FundamentalScreener:
+    """
+    Fundamental quality screener based on proven screening criteria:
+    - Consistent EPS growth (3-year CAGR)
+    - Healthy revenue growth
+    - PEG ratio (valuation relative to growth)
+    - Debt levels (D/E ratio)
+    - Profitability (ROE, profit margins)
+    - Market cap guardrails
+
+    Note on PEG: A low PEG (<1) is a shortlisting tool, not proof of value.
+    It may reflect cyclical upswing rather than sustainable growth.
+    """
+
+    # Quality thresholds
+    MIN_EPS_GROWTH = 10.0  # Minimum 3-year EPS CAGR %
+    MIN_REVENUE_GROWTH = 8.0  # Minimum 3-year revenue CAGR %
+    MAX_PEG_RATIO = 2.0  # Maximum PEG for consideration
+    GOOD_PEG_RATIO = 1.0  # PEG < 1 is attractive (with caveats)
+    MAX_DEBT_EQUITY = 1.5  # Maximum D/E ratio
+    LOW_DEBT_EQUITY = 0.5  # Low debt threshold
+    MIN_ROE = 12.0  # Minimum ROE %
+    GOOD_ROE = 18.0  # Good ROE threshold
+    MIN_PROFIT_MARGIN = 5.0  # Minimum net profit margin %
+    MIN_MARKET_CAP_CR = 500  # Minimum market cap in Crores
+
+    def __init__(self):
+        self.logger = logging.getLogger(__name__)
+        self._cache: Dict[str, Dict] = {}
+
+    def get_quality_metrics(self, ticker: str) -> Dict[str, Any]:
+        """
+        Fetch quality metrics for a stock from Yahoo Finance.
+        Returns dict with EPS growth, revenue growth, PEG, D/E, ROE, margins, market cap.
+        """
+        if ticker in self._cache:
+            return self._cache[ticker]
+
+        metrics = {
+            'eps_growth_3y': None,
+            'revenue_growth_3y': None,
+            'peg_ratio': None,
+            'debt_to_equity': None,
+            'roe': None,
+            'profit_margin': None,
+            'market_cap_cr': None,
+            'pe_ratio': None,
+            'pb_ratio': None,
+            'current_ratio': None,
+        }
+
+        try:
+            import yfinance as yf
+            stock = yf.Ticker(ticker)
+            info = stock.info
+
+            # Market cap (convert to Crores: 1 Cr = 10 million)
+            if 'marketCap' in info and info['marketCap']:
+                metrics['market_cap_cr'] = info['marketCap'] / 10_000_000
+
+            # PEG ratio (directly from Yahoo)
+            if 'pegRatio' in info and info['pegRatio']:
+                metrics['peg_ratio'] = info['pegRatio']
+
+            # Debt to Equity
+            if 'debtToEquity' in info and info['debtToEquity']:
+                metrics['debt_to_equity'] = info['debtToEquity'] / 100  # Yahoo returns as %
+
+            # ROE (Return on Equity)
+            if 'returnOnEquity' in info and info['returnOnEquity']:
+                metrics['roe'] = info['returnOnEquity'] * 100  # Convert to %
+
+            # Profit margin
+            if 'profitMargins' in info and info['profitMargins']:
+                metrics['profit_margin'] = info['profitMargins'] * 100  # Convert to %
+
+            # P/E ratio
+            if 'trailingPE' in info and info['trailingPE']:
+                metrics['pe_ratio'] = info['trailingPE']
+
+            # P/B ratio
+            if 'priceToBook' in info and info['priceToBook']:
+                metrics['pb_ratio'] = info['priceToBook']
+
+            # Current ratio (liquidity)
+            if 'currentRatio' in info and info['currentRatio']:
+                metrics['current_ratio'] = info['currentRatio']
+
+            # Revenue growth (YoY from Yahoo)
+            if 'revenueGrowth' in info and info['revenueGrowth']:
+                metrics['revenue_growth_3y'] = info['revenueGrowth'] * 100  # Use as proxy
+
+            # EPS growth (calculate from earnings growth or forward PE difference)
+            if 'earningsGrowth' in info and info['earningsGrowth']:
+                metrics['eps_growth_3y'] = info['earningsGrowth'] * 100
+            elif 'earningsQuarterlyGrowth' in info and info['earningsQuarterlyGrowth']:
+                metrics['eps_growth_3y'] = info['earningsQuarterlyGrowth'] * 100
+
+            self._cache[ticker] = metrics
+
+        except Exception as e:
+            self.logger.debug(f"Error fetching quality metrics for {ticker}: {e}")
+
+        return metrics
+
+    def calculate_quality_score(self, metrics: Dict[str, Any]) -> Tuple[float, List[str], bool]:
+        """
+        Calculate quality score (0-100) based on fundamental metrics.
+        Returns (score, flags, passes_minimum).
+
+        Scoring breakdown:
+        - EPS Growth: 0-25 points
+        - Revenue Growth: 0-15 points
+        - PEG Ratio: 0-20 points
+        - Debt/Equity: 0-15 points
+        - ROE: 0-15 points
+        - Profit Margin: 0-10 points
+        """
+        score = 0.0
+        flags = []
+        passes = True
+
+        # 1. EPS Growth (25 points max)
+        eps_growth = metrics.get('eps_growth_3y')
+        if eps_growth is not None:
+            if eps_growth >= 25:
+                score += 25
+                flags.append("Strong EPS growth (>25%)")
+            elif eps_growth >= 15:
+                score += 20
+                flags.append("Good EPS growth (15-25%)")
+            elif eps_growth >= self.MIN_EPS_GROWTH:
+                score += 15
+            elif eps_growth >= 5:
+                score += 8
+            elif eps_growth < 0:
+                flags.append("⚠ Negative EPS growth")
+                passes = False
+
+        # 2. Revenue Growth (15 points max)
+        rev_growth = metrics.get('revenue_growth_3y')
+        if rev_growth is not None:
+            if rev_growth >= 20:
+                score += 15
+                flags.append("Strong revenue growth (>20%)")
+            elif rev_growth >= self.MIN_REVENUE_GROWTH:
+                score += 12
+            elif rev_growth >= 5:
+                score += 8
+            elif rev_growth < 0:
+                flags.append("⚠ Negative revenue growth")
+
+        # 3. PEG Ratio (20 points max)
+        peg = metrics.get('peg_ratio')
+        if peg is not None and peg > 0:
+            if peg < 0.5:
+                score += 20
+                flags.append("Very low PEG (<0.5) - verify sustainability")
+            elif peg < self.GOOD_PEG_RATIO:
+                score += 18
+                flags.append("Attractive PEG (<1)")
+            elif peg < 1.5:
+                score += 12
+            elif peg < self.MAX_PEG_RATIO:
+                score += 6
+            else:
+                flags.append("⚠ High PEG (>2) - expensive relative to growth")
+
+        # 4. Debt/Equity (15 points max)
+        de = metrics.get('debt_to_equity')
+        if de is not None:
+            if de < self.LOW_DEBT_EQUITY:
+                score += 15
+                flags.append("Low debt (D/E <0.5)")
+            elif de < 1.0:
+                score += 12
+            elif de < self.MAX_DEBT_EQUITY:
+                score += 6
+            else:
+                flags.append("⚠ High debt (D/E >1.5)")
+                passes = False
+
+        # 5. ROE (15 points max)
+        roe = metrics.get('roe')
+        if roe is not None:
+            if roe >= self.GOOD_ROE:
+                score += 15
+                flags.append("Excellent ROE (>18%)")
+            elif roe >= self.MIN_ROE:
+                score += 12
+            elif roe >= 8:
+                score += 6
+            elif roe < 5:
+                flags.append("⚠ Low ROE (<5%)")
+
+        # 6. Profit Margin (10 points max)
+        margin = metrics.get('profit_margin')
+        if margin is not None:
+            if margin >= 20:
+                score += 10
+                flags.append("High profit margin (>20%)")
+            elif margin >= 12:
+                score += 8
+            elif margin >= self.MIN_PROFIT_MARGIN:
+                score += 5
+            elif margin < 0:
+                flags.append("⚠ Negative profit margin")
+                passes = False
+
+        # 7. Market cap check (no points, just filter)
+        mcap = metrics.get('market_cap_cr')
+        if mcap is not None and mcap < self.MIN_MARKET_CAP_CR:
+            flags.append(f"⚠ Small cap (<₹{self.MIN_MARKET_CAP_CR}Cr)")
+
+        return score, flags, passes
+
+    def screen_stock(self, ticker: str) -> Tuple[float, Dict[str, Any], List[str], bool]:
+        """
+        Screen a stock for quality.
+        Returns (quality_score, metrics, flags, passes_minimum).
+        """
+        metrics = self.get_quality_metrics(ticker)
+        score, flags, passes = self.calculate_quality_score(metrics)
+        return score, metrics, flags, passes
+
+
 class FundamentalEnhancer:
     """
     Enhances technical signals with fundamental data from:
@@ -911,6 +1156,10 @@ class FundamentalEnhancer:
         # Cache for macro news (shared across all stocks)
         self._macro_news_cache = None
         self._fii_dii_cache = None
+
+        # Initialize fundamental screener for quality metrics
+        self.quality_screener = FundamentalScreener()
+        self.use_quality_screen = True  # Enable quality screening by default
 
     def _find_database(self, db_path: Optional[str] = None) -> Optional[str]:
         """Find the circulars database."""
@@ -1120,6 +1369,24 @@ class FundamentalEnhancer:
 
             except Exception as e:
                 self.logger.debug(f"Error getting macro/policy data for {ticker}: {e}")
+
+        # Add quality metrics if enabled
+        if self.use_quality_screen and self.quality_screener:
+            try:
+                quality_score, metrics, flags, passes = self.quality_screener.screen_stock(ticker)
+                fundamental.quality_score = quality_score
+                fundamental.passes_quality = passes
+                fundamental.quality_flags = flags
+                fundamental.eps_growth_3y = metrics.get('eps_growth_3y')
+                fundamental.revenue_growth_3y = metrics.get('revenue_growth_3y')
+                fundamental.peg_ratio = metrics.get('peg_ratio')
+                fundamental.debt_to_equity = metrics.get('debt_to_equity')
+                fundamental.roe = metrics.get('roe')
+                fundamental.profit_margin = metrics.get('profit_margin')
+                fundamental.market_cap_cr = metrics.get('market_cap_cr')
+                self.logger.debug(f"{ticker}: Quality score={quality_score:.0f}, passes={passes}")
+            except Exception as e:
+                self.logger.debug(f"Error getting quality metrics for {ticker}: {e}")
 
         # Cache result
         self._catalyst_cache[ticker] = fundamental
@@ -1472,14 +1739,23 @@ class AdvancedSignalGenerator:
                 elif fundamental.policy_score < -10:
                     risks.append("Negative policy impact")
 
-                # Calculate fundamental score (now includes institutional + policy)
+                # Calculate fundamental score (now includes institutional + policy + quality)
                 # Note: institutional_score is market-wide, so lower weight to avoid overfit
                 fundamental_score = (
                     fundamental.news_score +
                     fundamental.pead_score +
                     fundamental.institutional_score * 0.2 +  # Lower weight (market-wide, not stock-specific)
-                    fundamental.policy_score * 0.2  # Lower weight for policy
+                    fundamental.policy_score * 0.2 +  # Lower weight for policy
+                    fundamental.quality_score * 0.3  # Quality metrics weight
                 )
+
+                # Add quality-related reasons/risks
+                if fundamental.quality_score >= 70:
+                    reasons.append(f"High quality score ({fundamental.quality_score:.0f}/100)")
+                elif fundamental.quality_score < 40 and fundamental.quality_score > 0:
+                    risks.append(f"Low quality score ({fundamental.quality_score:.0f}/100)")
+                if not fundamental.passes_quality:
+                    risks.append("⚠ Fails quality checks")
 
         # Calculate combined score (70% technical, 30% fundamental)
         technical_score = min(abs(avg_score), 100)
