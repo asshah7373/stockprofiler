@@ -2266,6 +2266,499 @@ def test_news(
         raise typer.Exit(1)
 
 
+@app.command("analyze-stock")
+def analyze_stock(
+    ticker: str = typer.Argument(..., help="Stock ticker (e.g., RELIANCE or RELIANCE.NS)"),
+    hold_days: int = typer.Option(7, "--hold", "-h", help="Holding period in days for targets"),
+    fundamentals: bool = typer.Option(True, "--fundamentals/--no-fundamentals", help="Include news/sentiment analysis"),
+    news_days: int = typer.Option(30, "--news-days", help="Days to look back for news/circulars"),
+    output_json: bool = typer.Option(False, "--json", "-j", help="Output as JSON"),
+    verbose: bool = typer.Option(False, "--verbose", "-v", help="Show debug output")
+):
+    """
+    Comprehensive analysis of a single stock with all available data.
+
+    This command provides a detailed analysis combining:
+
+    Technical Analysis (8 Advanced Indicators):
+    - MACD (trend momentum)
+    - Williams %R Trend Exhaustion (tops/bottoms)
+    - Williams VixFix (volatility bottoms)
+    - Hull Moving Average (trend identification)
+    - Laguerre RSI (better moving averages)
+    - Supertrend (trailing stop levels)
+    - RSI with Divergence (reversal detection)
+    - Ichimoku Cloud (comprehensive analysis)
+
+    Fundamental Data:
+    - Live news from Yahoo Finance and Google News
+    - NSE/BSE circulars and corporate announcements
+    - Sentiment analysis (FinBERT/VADER/Keyword)
+    - Catalyst detection (14 types)
+    - PEAD (Post-Earnings Announcement Drift) signals
+
+    Institutional & Macro Data:
+    - FII/DII daily flow sentiment (market-wide)
+    - Bulk/block deal activity
+    - Insider trading signals (SAST filings)
+    - Government policy impact on sector
+
+    Quality Screening:
+    - EPS growth (3-year consistency)
+    - Revenue growth
+    - PEG ratio (valuation vs growth)
+    - Debt/Equity ratio
+    - ROE (return on equity)
+    - Profit margins
+
+    Examples:
+        finagent analyze-stock RELIANCE         # Full analysis with news
+        finagent analyze-stock INFY --hold 14   # 14-day holding period targets
+        finagent analyze-stock TCS --no-fundamentals  # Technical only (faster)
+        finagent analyze-stock HDFCBANK --json  # JSON output for programmatic use
+    """
+    from rich.panel import Panel
+    from rich.table import Table
+    from .signals.advanced_signals import (
+        AdvancedSignalGenerator, SignalDirection
+    )
+    import yfinance as yf
+
+    # Setup logging if verbose
+    if verbose:
+        setup_logging(verbose=True)
+        logging.getLogger('finagent').setLevel(logging.DEBUG)
+        console.print("[dim]Verbose mode enabled - showing debug output[/dim]\n")
+
+    # Ensure ticker has suffix
+    if ".NS" not in ticker and ".BO" not in ticker:
+        ticker_with_suffix = f"{ticker}.NS"
+    else:
+        ticker_with_suffix = ticker
+
+    display_ticker = ticker_with_suffix.replace(".NS", "").replace(".BO", "")
+
+    fund_status = f"[green]Enabled[/green] ({news_days}-day lookback)" if fundamentals else "[dim]Disabled[/dim]"
+    console.print(Panel(
+        f"[bold cyan]Comprehensive Stock Analysis[/bold cyan]\n\n"
+        f"Ticker: {display_ticker}\n"
+        f"Holding Period: {hold_days} days\n"
+        f"Fundamental Data: {fund_status}",
+        title="FinAgent Stock Analyzer"
+    ))
+
+    try:
+        # Initialize generator
+        generator = AdvancedSignalGenerator(use_fundamentals=fundamentals, days_lookback=news_days)
+
+        # Show component status in verbose mode
+        if verbose and fundamentals and generator.fundamental_enhancer:
+            fe = generator.fundamental_enhancer
+            console.print(f"[dim]News fetcher: {'Enabled' if fe.news_fetcher else 'Disabled'}[/dim]")
+            console.print(f"[dim]Sentiment analyzer: {'Enabled' if fe.sentiment_analyzer else 'Disabled'}[/dim]")
+            console.print(f"[dim]Database: {fe.circulars_db or 'Not found (using live news)'}[/dim]\n")
+
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            console=console
+        ) as progress:
+            # Fetch price data
+            task = progress.add_task(f"Fetching price data for {display_ticker}...", total=None)
+            stock = yf.Ticker(ticker_with_suffix)
+            df = stock.history(period="6mo")
+            progress.update(task, description="[green]Price data fetched[/green]")
+
+            if len(df) < 60:
+                console.print(f"[red]Error: Insufficient data for {display_ticker} (need at least 60 days)[/red]")
+                raise typer.Exit(1)
+
+            # Get company info
+            task = progress.add_task("Fetching company info...", total=None)
+            try:
+                info = stock.info
+                company_name = info.get('longName', info.get('shortName', display_ticker))
+                sector = info.get('sector', 'N/A')
+                industry = info.get('industry', 'N/A')
+                market_cap = info.get('marketCap', 0)
+                market_cap_cr = market_cap / 10000000 if market_cap else 0  # Convert to Crores
+            except Exception:
+                company_name = display_ticker
+                sector = "N/A"
+                industry = "N/A"
+                market_cap_cr = 0
+            progress.update(task, description="[green]Company info fetched[/green]")
+
+            # Run analysis
+            task = progress.add_task("Running technical analysis (8 indicators)...", total=None)
+            signal = generator.analyze_stock(ticker_with_suffix, df, hold_days)
+            progress.update(task, description="[green]Technical analysis complete[/green]")
+
+            if fundamentals:
+                task = progress.add_task("Analyzing news & sentiment...", total=None)
+                # Signal already includes fundamental data from analyze_stock
+                progress.update(task, description="[green]News analysis complete[/green]")
+
+        # JSON output
+        if output_json:
+            import json
+            result = {
+                'ticker': ticker_with_suffix,
+                'company_name': company_name,
+                'sector': sector,
+                'industry': industry,
+                'market_cap_cr': market_cap_cr,
+            }
+            if signal:
+                result.update(signal.to_dict())
+            else:
+                result['signal'] = None
+                result['message'] = 'No actionable signal (neutral)'
+            console.print(json.dumps(result, indent=2, default=str))
+            return
+
+        # ========================================
+        # DISPLAY RESULTS
+        # ========================================
+
+        # Company Header
+        console.print(f"\n[bold cyan]═══════════════════════════════════════════════════════════════════[/bold cyan]")
+        console.print(f"[bold white]{company_name}[/bold white] ({display_ticker})")
+        console.print(f"[dim]{sector} | {industry}[/dim]")
+        if market_cap_cr > 0:
+            console.print(f"[dim]Market Cap: ₹{market_cap_cr:,.0f} Cr[/dim]")
+        console.print(f"[bold cyan]═══════════════════════════════════════════════════════════════════[/bold cyan]")
+
+        if not signal:
+            console.print(f"\n[yellow]No actionable signal for {display_ticker}[/yellow]")
+            console.print("[dim]The stock shows NEUTRAL technical indicators - no strong buy or sell signal.[/dim]")
+            console.print("[dim]Try again later or check other stocks.[/dim]")
+            return
+
+        # Current Price & Signal Summary
+        dir_color = "green" if signal.direction in [SignalDirection.STRONG_BUY, SignalDirection.BUY] else "red"
+        dir_icon = "▲" if signal.direction in [SignalDirection.STRONG_BUY, SignalDirection.BUY] else "▼"
+
+        console.print(f"\n[bold]Current Price:[/bold] ₹{signal.current_price:,.2f}")
+        console.print(f"[bold]Signal:[/bold] [{dir_color}]{dir_icon} {signal.direction.value.replace('_', ' ')}[/{dir_color}] ({signal.confidence:.0f}% confidence)")
+        console.print(f"[bold]Combined Score:[/bold] {signal.combined_score:.0f}/100")
+
+        # ========================================
+        # TRADE SETUP
+        # ========================================
+        console.print(f"\n[bold magenta]╔══ TRADE SETUP ══╗[/bold magenta]")
+
+        trade_table = Table(show_header=False, box=None, padding=(0, 2))
+        trade_table.add_column("Label", style="bold")
+        trade_table.add_column("Price", justify="right")
+        trade_table.add_column("Change", justify="right")
+
+        # Entry
+        trade_table.add_row("Entry", f"₹{signal.entry_price:,.2f}", "")
+
+        # Stop Loss
+        sl_pct = ((signal.stop_loss / signal.entry_price) - 1) * 100
+        trade_table.add_row("Stop Loss", f"₹{signal.stop_loss:,.2f}", f"[red]{sl_pct:+.1f}%[/red]")
+
+        # Targets
+        t1_pct = ((signal.target_1 / signal.entry_price) - 1) * 100
+        t2_pct = ((signal.target_2 / signal.entry_price) - 1) * 100
+        t3_pct = ((signal.target_3 / signal.entry_price) - 1) * 100
+
+        trade_table.add_row("Target 1", f"₹{signal.target_1:,.2f}", f"[{dir_color}]{t1_pct:+.1f}%[/{dir_color}]")
+        trade_table.add_row("Target 2", f"₹{signal.target_2:,.2f}", f"[{dir_color}]{t2_pct:+.1f}%[/{dir_color}]")
+        trade_table.add_row("Target 3", f"₹{signal.target_3:,.2f}", f"[{dir_color}]{t3_pct:+.1f}%[/{dir_color}]")
+
+        console.print(trade_table)
+        console.print(f"\n  [bold]Risk/Reward:[/bold] {signal.risk_reward_ratio:.2f}")
+        console.print(f"  [bold]Expected Return:[/bold] [{dir_color}]{signal.expected_return_pct:+.1f}%[/{dir_color}]")
+        console.print(f"  [bold]Suggested Hold:[/bold] {signal.suggested_hold_days} days")
+
+        # ========================================
+        # TECHNICAL INDICATORS (8 Indicators)
+        # ========================================
+        console.print(f"\n[bold blue]╔══ TECHNICAL INDICATORS (8 Advanced) ══╗[/bold blue]")
+
+        ind_table = Table(show_header=True, header_style="bold")
+        ind_table.add_column("Indicator", style="cyan", width=18)
+        ind_table.add_column("Signal", justify="center", width=12)
+        ind_table.add_column("Strength", justify="right", width=10)
+        ind_table.add_column("Details", width=35)
+
+        indicator_names = {
+            'macd': 'MACD',
+            'williams_r': 'Williams %R',
+            'vix_fix': 'VixFix',
+            'hull_ma': 'Hull MA',
+            'laguerre': 'Laguerre RSI',
+            'supertrend': 'Supertrend',
+            'rsi': 'RSI',
+            'ichimoku': 'Ichimoku'
+        }
+
+        for ind_key, ind_name in indicator_names.items():
+            if ind_key in signal.indicators:
+                ind = signal.indicators[ind_key]
+                ind_signal = ind.get('signal', 'N/A')
+                ind_strength = ind.get('strength', 0)
+
+                # Determine color
+                if ind_signal in ['BUY', 'BULLISH', 'STRONG_BUY', 'OVERSOLD']:
+                    color = "green"
+                elif ind_signal in ['SELL', 'BEARISH', 'STRONG_SELL', 'OVERBOUGHT']:
+                    color = "red"
+                else:
+                    color = "yellow"
+
+                # Build details string
+                details = []
+                if ind_key == 'macd':
+                    if 'histogram' in ind:
+                        details.append(f"Hist: {ind['histogram']:.2f}")
+                    if ind.get('crossover'):
+                        details.append("Crossover")
+                elif ind_key == 'williams_r':
+                    if ind.get('oversold_exhaustion'):
+                        details.append("Oversold exhaustion")
+                    if ind.get('overbought_exhaustion'):
+                        details.append("Overbought exhaustion")
+                    if 'value' in ind:
+                        details.append(f"Value: {ind['value']:.1f}")
+                elif ind_key == 'vix_fix':
+                    if ind.get('is_bottom_signal'):
+                        details.append("Bottom signal detected")
+                    if 'value' in ind:
+                        details.append(f"Value: {ind['value']:.2f}")
+                elif ind_key == 'hull_ma':
+                    if ind.get('hull_rising'):
+                        details.append("Hull rising")
+                    else:
+                        details.append("Hull falling")
+                    if 'direction' in ind:
+                        details.append(f"Dir: {ind['direction']}")
+                elif ind_key == 'laguerre':
+                    if 'value' in ind:
+                        details.append(f"Value: {ind['value']:.2f}")
+                elif ind_key == 'supertrend':
+                    if 'direction' in ind:
+                        details.append(f"Trend: {ind['direction']}")
+                    if 'level' in ind:
+                        details.append(f"Level: ₹{ind['level']:.0f}")
+                elif ind_key == 'rsi':
+                    if 'value' in ind:
+                        details.append(f"RSI: {ind['value']:.1f}")
+                    if ind.get('bullish_divergence'):
+                        details.append("Bullish div")
+                    if ind.get('bearish_divergence'):
+                        details.append("Bearish div")
+                elif ind_key == 'ichimoku':
+                    if 'position' in ind:
+                        details.append(ind['position'])
+
+                details_str = ", ".join(details) if details else "-"
+
+                ind_table.add_row(
+                    ind_name,
+                    f"[{color}]{ind_signal}[/{color}]",
+                    f"{ind_strength:.0f}",
+                    details_str[:35]
+                )
+
+        console.print(ind_table)
+
+        # ========================================
+        # FUNDAMENTAL DATA (if enabled)
+        # ========================================
+        if fundamentals and signal.fundamental:
+            fund = signal.fundamental
+
+            console.print(f"\n[bold green]╔══ NEWS & SENTIMENT ══╗[/bold green]")
+
+            if fund.has_recent_news:
+                sent_color = "green" if fund.news_sentiment == "BULLISH" else ("red" if fund.news_sentiment == "BEARISH" else "yellow")
+                method_color = "cyan" if fund.sentiment_method == "FinBERT" else ("blue" if fund.sentiment_method == "VADER" else "dim")
+
+                console.print(f"  [bold]News Sentiment:[/bold] [{sent_color}]{fund.news_sentiment}[/{sent_color}] (score: {fund.news_score:+.0f})")
+                console.print(f"  [bold]Analysis Method:[/bold] [{method_color}]{fund.sentiment_method}[/{method_color}]")
+
+                # PEAD
+                if fund.earnings_surprise:
+                    ear_color = "green" if fund.earnings_surprise == "BEAT" else ("red" if fund.earnings_surprise == "MISS" else "yellow")
+                    console.print(f"  [bold]Earnings Surprise:[/bold] [{ear_color}]{fund.earnings_surprise}[/{ear_color}] (PEAD score: {fund.pead_score:+.0f})")
+
+                # Recent Headlines
+                if fund.recent_headlines:
+                    console.print(f"\n  [bold]Recent Headlines:[/bold]")
+                    for i, headline in enumerate(fund.recent_headlines[:5], 1):
+                        console.print(f"    {i}. {headline[:75]}...")
+
+                # Catalysts
+                if fund.catalysts:
+                    console.print(f"\n  [bold]Detected Catalysts:[/bold]")
+                    for catalyst in fund.catalysts[:5]:
+                        cat_color = "green" if catalyst.get('sentiment') == 'BULLISH' else "red"
+                        impact = catalyst.get('impact', 'MEDIUM')
+                        cat_type = catalyst.get('type', 'NEWS').replace('_', ' ').title()
+                        console.print(f"    [{cat_color}]● {cat_type}[/{cat_color}] [{impact}]")
+                        console.print(f"      {catalyst.get('headline', '')[:70]}...")
+            else:
+                console.print("  [dim]No recent news found for this stock[/dim]")
+
+            # ========================================
+            # INSTITUTIONAL & MACRO DATA
+            # ========================================
+            console.print(f"\n[bold yellow]╔══ INSTITUTIONAL & MACRO DATA ══╗[/bold yellow]")
+            console.print(f"  [dim](Note: FII/DII is MARKET-WIDE sentiment, not stock-specific)[/dim]")
+
+            # FII/DII
+            fii_color = "green" if fund.fii_sentiment == "BULLISH" else ("red" if fund.fii_sentiment == "BEARISH" else "yellow")
+            dii_color = "green" if fund.dii_sentiment == "BULLISH" else ("red" if fund.dii_sentiment == "BEARISH" else "yellow")
+
+            console.print(f"  [bold]Market FII Flow:[/bold] [{fii_color}]{fund.fii_sentiment}[/{fii_color}]")
+            console.print(f"  [bold]Market DII Flow:[/bold] [{dii_color}]{fund.dii_sentiment}[/{dii_color}]")
+            console.print(f"  [bold]Institutional Score:[/bold] {fund.institutional_score:+.0f}")
+
+            # Bulk Deals
+            if fund.bulk_deals:
+                console.print(f"\n  [bold]Recent Bulk/Block Deals:[/bold]")
+                for deal in fund.bulk_deals[:3]:
+                    deal_type = deal.get('type', 'DEAL')
+                    console.print(f"    • {deal_type}: {deal.get('description', 'N/A')[:60]}")
+
+            # Insider Activity
+            if fund.insider_activity != "NEUTRAL":
+                ins_color = "green" if fund.insider_activity == "BUYING" else "red"
+                console.print(f"  [bold]Insider Activity:[/bold] [{ins_color}]{fund.insider_activity}[/{ins_color}]")
+
+            # Policy Impact
+            console.print(f"\n  [bold]Policy Impact:[/bold]", end=" ")
+            if fund.has_policy_boost:
+                console.print(f"[green]POSITIVE[/green] (score: {fund.policy_score:+.0f})")
+                if fund.affected_sectors:
+                    console.print(f"  [bold]Affected Sectors:[/bold] {', '.join(fund.affected_sectors[:3])}")
+                if fund.relevant_policies:
+                    console.print(f"\n  [bold]Relevant Policies/News:[/bold]")
+                    for policy in fund.relevant_policies[:3]:
+                        pol_sent = policy.get('sentiment', 'NEUTRAL')
+                        pol_color = "green" if pol_sent == "POSITIVE" else "red"
+                        console.print(f"    [{pol_color}]● {policy.get('keyword', 'policy').title()}[/{pol_color}]")
+                        console.print(f"      {policy.get('headline', '')[:65]}...")
+            elif fund.policy_score < -10:
+                console.print(f"[red]NEGATIVE[/red] (score: {fund.policy_score:+.0f})")
+            else:
+                console.print(f"Neutral (score: {fund.policy_score:+.0f})")
+
+            # ========================================
+            # QUALITY METRICS
+            # ========================================
+            if fund.quality_score > 0:
+                console.print(f"\n[bold magenta]╔══ FUNDAMENTAL QUALITY ══╗[/bold magenta]")
+
+                q_color = "green" if fund.quality_score >= 60 else ("yellow" if fund.quality_score >= 40 else "red")
+                pass_str = "[green]✓ PASSES[/green]" if fund.passes_quality else "[red]✗ FAILS[/red]"
+
+                console.print(f"  [bold]Quality Score:[/bold] [{q_color}]{fund.quality_score:.0f}/100[/{q_color}] {pass_str}")
+
+                # Key Metrics Table
+                qual_table = Table(show_header=True, header_style="bold", box=None)
+                qual_table.add_column("Metric", width=18)
+                qual_table.add_column("Value", justify="right", width=12)
+                qual_table.add_column("Assessment", width=20)
+
+                # PEG
+                if fund.peg_ratio is not None:
+                    peg_assess = "[green]Attractive[/green]" if fund.peg_ratio < 1 else ("[yellow]Fair[/yellow]" if fund.peg_ratio < 2 else "[red]Expensive[/red]")
+                    qual_table.add_row("PEG Ratio", f"{fund.peg_ratio:.2f}", peg_assess)
+
+                # ROE
+                if fund.roe is not None:
+                    roe_assess = "[green]Excellent[/green]" if fund.roe >= 18 else ("[yellow]Good[/yellow]" if fund.roe >= 12 else "[dim]Below avg[/dim]")
+                    qual_table.add_row("ROE", f"{fund.roe:.1f}%", roe_assess)
+
+                # Debt/Equity
+                if fund.debt_to_equity is not None:
+                    de_assess = "[green]Low debt[/green]" if fund.debt_to_equity < 0.5 else ("[yellow]Moderate[/yellow]" if fund.debt_to_equity < 1.5 else "[red]High debt[/red]")
+                    qual_table.add_row("Debt/Equity", f"{fund.debt_to_equity:.2f}", de_assess)
+
+                # Profit Margin
+                if fund.profit_margin is not None:
+                    margin_assess = "[green]Strong[/green]" if fund.profit_margin >= 15 else ("[yellow]Moderate[/yellow]" if fund.profit_margin >= 5 else "[red]Thin[/red]")
+                    qual_table.add_row("Profit Margin", f"{fund.profit_margin:.1f}%", margin_assess)
+
+                # EPS Growth
+                if fund.eps_growth_3y is not None:
+                    eps_assess = "[green]Strong growth[/green]" if fund.eps_growth_3y >= 15 else ("[yellow]Moderate[/yellow]" if fund.eps_growth_3y >= 0 else "[red]Declining[/red]")
+                    qual_table.add_row("EPS Growth (3Y)", f"{fund.eps_growth_3y:+.1f}%", eps_assess)
+
+                # Revenue Growth
+                if fund.revenue_growth_3y is not None:
+                    rev_assess = "[green]Growing[/green]" if fund.revenue_growth_3y >= 10 else ("[yellow]Stable[/yellow]" if fund.revenue_growth_3y >= 0 else "[red]Shrinking[/red]")
+                    qual_table.add_row("Revenue Growth (3Y)", f"{fund.revenue_growth_3y:+.1f}%", rev_assess)
+
+                # Market Cap
+                if fund.market_cap_cr is not None and fund.market_cap_cr > 0:
+                    cap_cat = "Large Cap" if fund.market_cap_cr >= 20000 else ("Mid Cap" if fund.market_cap_cr >= 5000 else "Small Cap")
+                    qual_table.add_row("Market Cap", f"₹{fund.market_cap_cr:,.0f} Cr", cap_cat)
+
+                console.print(qual_table)
+
+                # Quality Flags
+                if fund.quality_flags:
+                    console.print(f"\n  [bold]Quality Flags:[/bold]")
+                    for flag in fund.quality_flags[:5]:
+                        flag_color = "green" if "strong" in flag.lower() or "high" in flag.lower() or "good" in flag.lower() else "red"
+                        console.print(f"    [{flag_color}]• {flag}[/{flag_color}]")
+
+        # ========================================
+        # BULLISH & BEARISH FACTORS
+        # ========================================
+        if signal.reasons or signal.risks:
+            console.print(f"\n[bold]╔══ ANALYSIS SUMMARY ══╗[/bold]")
+
+            if signal.reasons:
+                console.print(f"\n  [bold green]Bullish Factors:[/bold green]")
+                for reason in signal.reasons[:8]:
+                    console.print(f"    [green]+[/green] {reason}")
+
+            if signal.risks:
+                console.print(f"\n  [bold red]Risk Factors:[/bold red]")
+                for risk in signal.risks[:8]:
+                    console.print(f"    [red]-[/red] {risk}")
+
+        # ========================================
+        # SCORE BREAKDOWN
+        # ========================================
+        if fundamentals and signal.fundamental:
+            fund = signal.fundamental
+            console.print(f"\n[bold]╔══ SCORE BREAKDOWN ══╗[/bold]")
+            console.print(f"  [dim]Combined Score = 70% Technical + 30% Fundamental[/dim]")
+            console.print(f"  Technical Score: {signal.confidence:.0f}")
+
+            if fund.has_recent_news:
+                quality_contrib = fund.quality_score * 0.3 if fund.quality_score > 0 else 0
+                console.print(f"  Fundamental Components:")
+                console.print(f"    News Sentiment: {fund.news_score:+.0f}")
+                console.print(f"    PEAD Score: {fund.pead_score:+.0f}")
+                console.print(f"    Institutional (×0.2): {fund.institutional_score * 0.2:+.1f}")
+                console.print(f"    Policy (×0.2): {fund.policy_score * 0.2:+.1f}")
+                console.print(f"    Quality (×0.3): {quality_contrib:+.1f}")
+
+        # ========================================
+        # DISCLAIMER
+        # ========================================
+        console.print(f"\n[dim]{'═' * 70}[/dim]")
+        console.print(f"[dim]Disclaimer: This analysis is for informational purposes only.[/dim]")
+        console.print(f"[dim]Not financial advice. Always do your own research before investing.[/dim]")
+        console.print(f"[dim]Note on PEG: Low PEG (<1) may reflect cyclical upswing, not sustainable growth.[/dim]")
+
+    except Exception as e:
+        console.print(f"[red]Error analyzing {display_ticker}: {e}[/red]")
+        if verbose:
+            import traceback
+            console.print(traceback.format_exc())
+        raise typer.Exit(1)
+
+
 @app.callback()
 def main(
     version: bool = typer.Option(False, "--version", "-V", help="Show version")
