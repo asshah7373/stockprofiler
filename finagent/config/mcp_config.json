@@ -1,0 +1,139 @@
+{
+  "mcpServers": {
+    "market-data": {
+      "command": "python",
+      "args": ["-m", "finagent.mcp_servers.market_data_server"],
+      "cwd": ".",
+      "env": {},
+      "description": "Market data server for stock prices and company info",
+      "tools": [
+        {
+          "name": "get_ticker_price",
+          "description": "Get current price for a stock ticker",
+          "parameters": {
+            "ticker": {
+              "type": "string",
+              "description": "Stock symbol (e.g., RELIANCE.NS)"
+            }
+          }
+        },
+        {
+          "name": "get_historical_data",
+          "description": "Get historical OHLCV data",
+          "parameters": {
+            "ticker": {"type": "string"},
+            "period": {"type": "string", "default": "1y"},
+            "interval": {"type": "string", "default": "1d"}
+          }
+        },
+        {
+          "name": "get_company_info",
+          "description": "Get company fundamentals and info",
+          "parameters": {
+            "ticker": {"type": "string"}
+          }
+        },
+        {
+          "name": "get_index_data",
+          "description": "Get benchmark index data",
+          "parameters": {
+            "index": {"type": "string", "default": "NIFTY50"},
+            "period": {"type": "string", "default": "1y"}
+          }
+        }
+      ]
+    },
+    "document-parser": {
+      "command": "python",
+      "args": ["-m", "finagent.mcp_servers.document_parser_server"],
+      "cwd": ".",
+      "env": {},
+      "description": "Document parser for BSE/NSE circulars and PDFs",
+      "tools": [
+        {
+          "name": "fetch_circular",
+          "description": "Download and parse a BSE/NSE circular",
+          "parameters": {
+            "url": {"type": "string"},
+            "doc_type": {
+              "type": "string",
+              "enum": ["circular", "quarterly", "announcement"]
+            }
+          }
+        },
+        {
+          "name": "search_circulars",
+          "description": "Search indexed circulars",
+          "parameters": {
+            "query": {"type": "string"},
+            "ticker": {"type": "string", "optional": true},
+            "days_back": {"type": "integer", "default": 30}
+          }
+        },
+        {
+          "name": "get_recent_circulars",
+          "description": "Get list of recent circulars",
+          "parameters": {
+            "exchange": {"type": "string", "default": "NSE"},
+            "days_back": {"type": "integer", "default": 7}
+          }
+        }
+      ]
+    },
+    "technical-analysis": {
+      "command": "python",
+      "args": ["-m", "finagent.mcp_servers.ta_server"],
+      "cwd": ".",
+      "env": {},
+      "description": "Technical analysis server for indicators",
+      "tools": [
+        {
+          "name": "calculate_indicators",
+          "description": "Calculate all technical indicators for a ticker",
+          "parameters": {
+            "ticker": {"type": "string"}
+          }
+        },
+        {
+          "name": "calculate_beta",
+          "description": "Calculate beta against NIFTY50",
+          "parameters": {
+            "ticker": {"type": "string"},
+            "period": {"type": "string", "default": "1y"}
+          }
+        }
+      ]
+    },
+    "news-sentiment": {
+      "command": "python",
+      "args": ["-m", "finagent.mcp_servers.news_server"],
+      "cwd": ".",
+      "env": {},
+      "description": "News and sentiment analysis server",
+      "tools": [
+        {
+          "name": "get_ticker_sentiment",
+          "description": "Get aggregated news sentiment for a ticker",
+          "parameters": {
+            "ticker": {"type": "string"},
+            "days_back": {"type": "integer", "default": 7}
+          }
+        },
+        {
+          "name": "get_sector_sentiment",
+          "description": "Get sentiment for a sector",
+          "parameters": {
+            "sector": {"type": "string"}
+          }
+        },
+        {
+          "name": "get_market_sentiment",
+          "description": "Get overall market sentiment",
+          "parameters": {}
+        }
+      ]
+    }
+  },
+  "version": "1.0.0",
+  "description": "MCP server configuration for FinAgent"
+}

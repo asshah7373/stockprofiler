@@ -1,0 +1,97 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "finagent"
+version = "1.0.0"
+description = "Autonomous Financial Multi-Agent System for Indian Markets"
+readme = "finagent/README.md"
+requires-python = ">=3.9"
+license = {text = "MIT"}
+authors = [
+    {name = "FinAgent Team"}
+]
+keywords = ["finance", "stock", "analysis", "ai", "agent", "india", "nse", "bse"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Financial and Insurance Industry",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Office/Business :: Financial :: Investment",
+]
+
+dependencies = [
+    "typer>=0.9.0",
+    "rich>=13.0.0",
+    "httpx>=0.25.0",
+    "pandas>=2.0.0",
+    "numpy>=1.24.0",
+    "pydantic>=2.0.0",
+    "python-dotenv>=1.0.0",
+    "chromadb>=0.4.0",
+    "sentence-transformers>=2.2.0",
+    "openai>=1.0.0",
+    "PyPDF2>=3.0.0",
+    "beautifulsoup4>=4.12.0",
+    "lxml>=4.9.0",
+    "TA-Lib>=0.4.28",
+    "yfinance>=0.2.0",
+    "aiohttp>=3.9.0",
+    "tenacity>=8.2.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-asyncio>=0.21.0",
+    "pytest-cov>=4.0.0",
+    "black>=23.0.0",
+    "ruff>=0.1.0",
+    "mypy>=1.0.0",
+]
+backtest = [
+    "vectorbt>=0.26.0",
+]
+all = [
+    "vectorbt>=0.26.0",
+    "newsapi-python>=0.2.6",
+]
+
+[project.scripts]
+finagent = "finagent.main:app"
+
+[project.urls]
+Homepage = "https://github.com/asshah7373/stockprofiler"
+Repository = "https://github.com/asshah7373/stockprofiler"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["finagent*"]
+
+[tool.setuptools.package-data]
+finagent = ["*.json", "*.yaml", "*.md"]
+
+[tool.black]
+line-length = 88
+target-version = ["py39", "py310", "py311", "py312"]
+include = '\.pyi?$'
+
+[tool.ruff]
+line-length = 88
+select = ["E", "F", "I", "N", "W"]
+ignore = ["E501"]
+
+[tool.mypy]
+python_version = "3.9"
+warn_return_any = true
+warn_unused_ignores = true
+disallow_untyped_defs = true
+
+[tool.pytest.ini_options]
+testpaths = ["finagent/tests"]
+asyncio_mode = "auto"
