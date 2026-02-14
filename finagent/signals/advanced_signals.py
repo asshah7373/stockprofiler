@@ -958,10 +958,12 @@ class AdvancedIndicators:
         close: np.ndarray, volume: np.ndarray
     ) -> np.ndarray:
         """Accumulation/Distribution Line."""
-        mfm = np.where(
-            high != low,
-            ((close - low) - (high - close)) / (high - low),
-            0.0
+        hl_range = high - low
+        numerator = (close - low) - (high - close)
+        mfm = np.divide(
+            numerator, hl_range,
+            out=np.zeros_like(numerator, dtype=float),
+            where=hl_range != 0
         )
         mfv = mfm * volume
         return np.cumsum(mfv)
