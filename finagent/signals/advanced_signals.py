@@ -810,6 +810,666 @@ class AdvancedIndicators:
         }
 
     # =========================================================================
+    # Market Regime Detection
+    # =========================================================================
+
+    def adx(
+        self,
+        high: np.ndarray,
+        low: np.ndarray,
+        close: np.ndarray,
+        period: int = 14
+    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """
+        Calculate ADX (Average Directional Index) with +DI and -DI.
+
+        Returns: (adx, plus_di, minus_di)
+        """
+        n = len(close)
+        plus_dm = np.zeros(n)
+        minus_dm = np.zeros(n)
+
+        for i in range(1, n):
+            up_move = high[i] - high[i - 1]
+            down_move = low[i - 1] - low[i]
+
+            if up_move > down_move and up_move > 0:
+                plus_dm[i] = up_move
+            if down_move > up_move and down_move > 0:
+                minus_dm[i] = down_move
+
+        atr = self._atr(high, low, close, period)
+        smooth_plus_dm = self._ema(plus_dm, period)
+        smooth_minus_dm = self._ema(minus_dm, period)
+
+        plus_di = np.where(atr > 0, (smooth_plus_dm / atr) * 100, 0)
+        minus_di = np.where(atr > 0, (smooth_minus_dm / atr) * 100, 0)
+
+        di_sum = plus_di + minus_di
+        dx = np.where(
+            di_sum > 0,
+            np.abs(plus_di - minus_di) / np.maximum(di_sum, 1e-10) * 100,
+            0
+        )
+        adx_values = self._ema(dx, period)
+
+        return adx_values, plus_di, minus_di
+
+    def detect_market_regime(
+        self,
+        high: np.ndarray,
+        low: np.ndarray,
+        close: np.ndarray
+    ) -> Dict[str, Any]:
+        """
+        Detect market regime using ADX + Bollinger Band width percentile.
+
+        Regimes:
+        - TRENDING: ADX > 25 and BB width above median
+        - RANGING: ADX < 20
+        - LOW_VOLATILITY: ADX < 20 and BB width below 25th percentile (squeeze)
+        - HIGH_VOLATILITY: BB width above 80th percentile
+        - TRANSITIONAL: Everything else
+        """
+        adx_vals, plus_di, minus_di = self.adx(high, low, close)
+        adx_current = adx_vals[-1]
+
+        # Bollinger Band width percentile
+        bb_mid = self._sma(close, 20)
+        bb_std = self._rolling_std(close, 20)
+
+        bb_widths = []
+        for i in range(max(len(close) - 60, 20), len(close)):
+            if not np.isnan(bb_mid[i]) and bb_mid[i] > 0 and not np.isnan(bb_std[i]):
+                bb_widths.append((2 * bb_std[i]) / bb_mid[i] * 100)
+
+        if not bb_widths:
+            return {'regime': 'TRANSITIONAL', 'adx': adx_current, 'bb_width_percentile': 50}
+
+        current_bb_width = bb_widths[-1] if bb_widths else 0
+        bb_percentile = sum(1 for w in bb_widths if w < current_bb_width) / len(bb_widths) * 100
+
+        if adx_current > 25 and bb_percentile > 50:
+            regime = "TRENDING"
+        elif adx_current < 20 and bb_percentile < 25:
+            regime = "LOW_VOLATILITY"
+        elif adx_current < 20:
+            regime = "RANGING"
+        elif bb_percentile > 80:
+            regime = "HIGH_VOLATILITY"
+        else:
+            regime = "TRANSITIONAL"
+
+        return {
+            'regime': regime,
+            'adx': round(adx_current, 1),
+            'adx_rising': adx_vals[-1] > adx_vals[-5] if len(adx_vals) > 5 else False,
+            'plus_di': round(plus_di[-1], 1),
+            'minus_di': round(minus_di[-1], 1),
+            'bb_width_percentile': round(bb_percentile, 1),
+            'trend_direction': 'UP' if plus_di[-1] > minus_di[-1] else 'DOWN',
+        }
+
+    # =========================================================================
+    # Volume Analysis
+    # =========================================================================
+
+    def on_balance_volume(self, close: np.ndarray, volume: np.ndarray) -> np.ndarray:
+        """On Balance Volume — cumulative volume flow indicator."""
+        obv = np.zeros(len(close))
+        obv[0] = volume[0]
+        for i in range(1, len(close)):
+            if close[i] > close[i - 1]:
+                obv[i] = obv[i - 1] + volume[i]
+            elif close[i] < close[i - 1]:
+                obv[i] = obv[i - 1] - volume[i]
+            else:
+                obv[i] = obv[i - 1]
+        return obv
+
+    def accumulation_distribution(
+        self, high: np.ndarray, low: np.ndarray,
+        close: np.ndarray, volume: np.ndarray
+    ) -> np.ndarray:
+        """Accumulation/Distribution Line."""
+        mfm = np.where(
+            high != low,
+            ((close - low) - (high - close)) / (high - low),
+            0.0
+        )
+        mfv = mfm * volume
+        return np.cumsum(mfv)
+
+    def volume_analysis(
+        self,
+        high: np.ndarray, low: np.ndarray,
+        close: np.ndarray, volume: np.ndarray,
+        lookback: int = 20
+    ) -> Dict[str, Any]:
+        """
+        Comprehensive volume analysis for signal confirmation.
+
+        Checks: volume ratio, OBV trend, A/D trend, OBV divergence.
+        """
+        vol_sma = np.mean(volume[-lookback:]) if len(volume) >= lookback else np.mean(volume)
+        vol_ratio = volume[-1] / vol_sma if vol_sma > 0 else 0
+
+        obv = self.on_balance_volume(close, volume)
+        obv_rising = obv[-1] > obv[-5] if len(obv) > 5 else False
+
+        ad = self.accumulation_distribution(high, low, close, volume)
+        ad_rising = ad[-1] > ad[-5] if len(ad) > 5 else False
+
+        # OBV divergence detection
+        price_higher = close[-1] > close[-lookback] if len(close) > lookback else False
+        obv_higher = obv[-1] > obv[-lookback] if len(obv) > lookback else False
+        bearish_divergence = price_higher and not obv_higher
+        bullish_divergence = (not price_higher) and obv_higher
+
+        # Volume trend (3-bar)
+        vol_expanding = (volume[-1] > volume[-2] > volume[-3]) if len(volume) > 3 else False
+
+        score = 0
+        if vol_ratio >= 2.0:
+            score += 30
+        elif vol_ratio >= 1.5:
+            score += 20
+        elif vol_ratio >= 1.0:
+            score += 10
+
+        if obv_rising:
+            score += 20
+        if ad_rising:
+            score += 15
+        if vol_expanding:
+            score += 10
+        if bearish_divergence:
+            score -= 25
+        if bullish_divergence:
+            score += 15
+
+        return {
+            'volume_ratio': round(vol_ratio, 2),
+            'volume_confirmed': vol_ratio >= 1.5,
+            'obv_rising': obv_rising,
+            'ad_rising': ad_rising,
+            'bullish_divergence': bullish_divergence,
+            'bearish_divergence': bearish_divergence,
+            'vol_expanding': vol_expanding,
+            'volume_score': max(min(score, 100), -50),
+        }
+
+    # =========================================================================
+    # Relative Strength (Mansfield RS)
+    # =========================================================================
+
+    def mansfield_relative_strength(
+        self,
+        stock_close: np.ndarray,
+        index_close: np.ndarray,
+        period: int = 200
+    ) -> Dict[str, Any]:
+        """
+        Mansfield Relative Strength — stock performance vs benchmark.
+
+        MRS > 0: outperforming index.  MRS < 0: underperforming.
+        MRS rising: strengthening.  MRS falling: weakening.
+        """
+        min_len = min(len(stock_close), len(index_close))
+        if min_len < period + 5:
+            return {'mrs': 0.0, 'mrs_trend': 'UNKNOWN', 'outperforming': False}
+
+        stock = stock_close[-min_len:]
+        index = index_close[-min_len:]
+
+        rp = stock / index * 100
+        rp_sma = self._sma(rp, period)
+
+        mrs_current = ((rp[-1] / rp_sma[-1]) - 1) * 100 if rp_sma[-1] > 0 and not np.isnan(rp_sma[-1]) else 0
+        mrs_prev = ((rp[-5] / rp_sma[-5]) - 1) * 100 if rp_sma[-5] > 0 and not np.isnan(rp_sma[-5]) else mrs_current
+
+        return {
+            'mrs': round(mrs_current, 2),
+            'mrs_trend': 'RISING' if mrs_current > mrs_prev else 'FALLING',
+            'outperforming': mrs_current > 0,
+        }
+
+    # =========================================================================
+    # Momentum Quality Scoring
+    # =========================================================================
+
+    def momentum_quality(
+        self,
+        high: np.ndarray, low: np.ndarray,
+        close: np.ndarray, volume: np.ndarray
+    ) -> Dict[str, Any]:
+        """
+        Assess momentum quality: ADX strength, ROC acceleration,
+        MACD histogram expansion, volume alignment, RSI divergence.
+
+        Returns score 0-100 and grade A/B/C/D.
+        """
+        score = 0
+        details = {}
+
+        # ADX trend strength (0-30 points)
+        adx_vals, plus_di, minus_di = self.adx(high, low, close)
+        adx_current = adx_vals[-1]
+        adx_rising = adx_vals[-1] > adx_vals[-5] if len(adx_vals) > 5 else False
+
+        if adx_current > 40:
+            score += 25
+            details['adx'] = f"Very strong ({adx_current:.0f})"
+        elif adx_current > 25:
+            score += 20
+            details['adx'] = f"Strong ({adx_current:.0f})"
+        elif adx_current > 20:
+            score += 10
+            details['adx'] = f"Moderate ({adx_current:.0f})"
+        else:
+            details['adx'] = f"Weak ({adx_current:.0f})"
+
+        if adx_rising and adx_current > 20:
+            score += 5
+
+        # ROC acceleration (0-25 points)
+        if len(close) > 16:
+            roc_10 = (close[-1] / close[-11] - 1) * 100
+            roc_10_prev = (close[-6] / close[-16] - 1) * 100
+            roc_accel = roc_10 - roc_10_prev
+
+            if roc_10 > 0 and roc_accel > 0:
+                score += 25
+                details['roc'] = f"Accelerating bullish ({roc_10:.1f}%)"
+            elif roc_10 > 0:
+                score += 15
+                details['roc'] = f"Decelerating bullish ({roc_10:.1f}%)"
+            elif roc_10 < 0 and roc_accel < 0:
+                details['roc'] = f"Accelerating bearish ({roc_10:.1f}%)"
+            else:
+                score += 10
+                details['roc'] = f"Mixed ({roc_10:.1f}%)"
+
+        # MACD histogram expansion (0-20 points)
+        _, _, hist = self.macd(close)
+        if len(hist) > 3:
+            hist_expanding = abs(hist[-1]) > abs(hist[-2]) > abs(hist[-3])
+            if hist_expanding and hist[-1] > 0:
+                score += 20
+                details['macd_hist'] = "Expanding bullish"
+            elif hist_expanding and hist[-1] < 0:
+                score += 5
+                details['macd_hist'] = "Expanding bearish"
+            else:
+                score += 10
+                details['macd_hist'] = "Contracting"
+
+        # Volume alignment (0-15 points)
+        vol_sma = np.mean(volume[-20:]) if len(volume) >= 20 else np.mean(volume)
+        vol_ratio = volume[-1] / vol_sma if vol_sma > 0 else 0
+        obv = self.on_balance_volume(close, volume)
+        price_dir = 1 if close[-1] > close[-10] else -1 if len(close) > 10 else 0
+        obv_dir = 1 if obv[-1] > obv[-10] else -1 if len(obv) > 10 else 0
+
+        if price_dir == obv_dir and vol_ratio > 1.0:
+            score += 15
+            details['vol_align'] = "Confirming"
+        elif price_dir == obv_dir:
+            score += 10
+            details['vol_align'] = "Weak confirming"
+        else:
+            details['vol_align'] = "DIVERGING"
+
+        # RSI divergence check (0-10 points)
+        rsi_vals = self.rsi(close)
+        if len(rsi_vals) > 20:
+            price_up = close[-1] > close[-20]
+            rsi_up = rsi_vals[-1] > rsi_vals[-20]
+            if price_up == rsi_up:
+                score += 10
+                details['divergence'] = "None"
+            else:
+                details['divergence'] = "RSI divergence (caution)"
+
+        grade = 'A' if score >= 80 else ('B' if score >= 60 else ('C' if score >= 40 else 'D'))
+
+        return {
+            'momentum_score': score,
+            'grade': grade,
+            'details': details,
+            'tradeable': score >= 40,
+        }
+
+    # =========================================================================
+    # Structure-Based Support/Resistance
+    # =========================================================================
+
+    def find_swing_highs(self, high: np.ndarray, lookback: int = 5) -> List[float]:
+        """Find swing high points (pivot highs)."""
+        swings = []
+        for i in range(lookback, len(high) - lookback):
+            if high[i] == np.max(high[i - lookback:i + lookback + 1]):
+                swings.append(float(high[i]))
+        return swings
+
+    def find_swing_lows(self, low: np.ndarray, lookback: int = 5) -> List[float]:
+        """Find swing low points (pivot lows)."""
+        swings = []
+        for i in range(lookback, len(low) - lookback):
+            if low[i] == np.min(low[i - lookback:i + lookback + 1]):
+                swings.append(float(low[i]))
+        return swings
+
+    def calculate_structure_targets(
+        self,
+        high: np.ndarray, low: np.ndarray, close: np.ndarray,
+        entry_price: float, direction: str = "BUY",
+        hold_days: int = 7
+    ) -> Dict[str, Any]:
+        """
+        Calculate targets using multiple methods and find confluence zones.
+
+        Methods: ATR-based, swing S/R, Fibonacci extensions, pivot points.
+        Returns best targets ranked by confluence count.
+        """
+        atr_val = self._atr(high, low, close)[-1]
+        hold_mult = np.sqrt(hold_days / 7)
+
+        swing_highs = self.find_swing_highs(high)
+        swing_lows = self.find_swing_lows(low)
+
+        all_targets = []
+
+        # Method 1: ATR-based
+        if direction == "BUY":
+            all_targets.extend([
+                entry_price + 1.5 * atr_val * hold_mult,
+                entry_price + 2.0 * atr_val * hold_mult,
+                entry_price + 3.0 * atr_val * hold_mult,
+            ])
+        else:
+            all_targets.extend([
+                entry_price - 1.5 * atr_val * hold_mult,
+                entry_price - 2.0 * atr_val * hold_mult,
+                entry_price - 3.0 * atr_val * hold_mult,
+            ])
+
+        # Method 2: Swing S/R levels
+        if direction == "BUY":
+            relevant = sorted([h for h in swing_highs if h > entry_price * 1.005])
+            all_targets.extend(relevant[:4])
+        else:
+            relevant = sorted([l for l in swing_lows if l < entry_price * 0.995], reverse=True)
+            all_targets.extend(relevant[:4])
+
+        # Method 3: Fibonacci extensions from last swing
+        if swing_lows and swing_highs:
+            last_low = min(swing_lows[-3:]) if len(swing_lows) >= 3 else min(swing_lows)
+            last_high = max(swing_highs[-3:]) if len(swing_highs) >= 3 else max(swing_highs)
+            swing_range = last_high - last_low
+            if swing_range > 0:
+                fib_levels = [0.618, 1.0, 1.272, 1.618]
+                if direction == "BUY":
+                    all_targets.extend([last_high + swing_range * f for f in fib_levels])
+                else:
+                    all_targets.extend([last_low - swing_range * f for f in fib_levels])
+
+        # Method 4: Pivot-based targets
+        if len(high) > 2:
+            pp = (high[-2] + low[-2] + close[-2]) / 3
+            r = high[-2] - low[-2]
+            if direction == "BUY":
+                all_targets.extend([pp + r * 0.382, pp + r * 0.618, pp + r * 1.0])
+            else:
+                all_targets.extend([pp - r * 0.382, pp - r * 0.618, pp - r * 1.0])
+
+        # Filter out invalid targets
+        if direction == "BUY":
+            all_targets = [t for t in all_targets if t > entry_price * 1.002]
+        else:
+            all_targets = [t for t in all_targets if t < entry_price * 0.998]
+
+        if not all_targets:
+            # Fallback to simple ATR targets
+            if direction == "BUY":
+                return {
+                    'target_1': round(entry_price + 1.5 * atr_val * hold_mult, 2),
+                    'target_2': round(entry_price + 2.0 * atr_val * hold_mult, 2),
+                    'target_3': round(entry_price + 3.0 * atr_val * hold_mult, 2),
+                    'confluence_count': 1,
+                }
+            else:
+                return {
+                    'target_1': round(entry_price - 1.5 * atr_val * hold_mult, 2),
+                    'target_2': round(entry_price - 2.0 * atr_val * hold_mult, 2),
+                    'target_3': round(entry_price - 3.0 * atr_val * hold_mult, 2),
+                    'confluence_count': 1,
+                }
+
+        # Cluster targets within 1.5% of each other
+        sorted_targets = sorted(all_targets) if direction == "BUY" else sorted(all_targets, reverse=True)
+        clusters = []
+        used = set()
+
+        for i, t in enumerate(sorted_targets):
+            if i in used:
+                continue
+            cluster = [t]
+            used.add(i)
+            for j in range(i + 1, len(sorted_targets)):
+                if j in used:
+                    continue
+                if abs(sorted_targets[j] - t) / t * 100 <= 1.5:
+                    cluster.append(sorted_targets[j])
+                    used.add(j)
+            clusters.append((sum(cluster) / len(cluster), len(cluster)))
+
+        # Sort by confluence count (most methods agreeing first)
+        clusters.sort(key=lambda x: x[1], reverse=True)
+
+        # Pick top 3 confluence levels
+        result_targets = [round(c[0], 2) for c in clusters[:3]]
+        max_confluence = clusters[0][1] if clusters else 1
+
+        # Pad if fewer than 3
+        while len(result_targets) < 3:
+            if direction == "BUY":
+                last = result_targets[-1]
+                result_targets.append(round(last + atr_val * hold_mult, 2))
+            else:
+                last = result_targets[-1]
+                result_targets.append(round(last - atr_val * hold_mult, 2))
+
+        return {
+            'target_1': result_targets[0],
+            'target_2': result_targets[1],
+            'target_3': result_targets[2],
+            'confluence_count': max_confluence,
+        }
+
+    def calculate_structure_stop(
+        self,
+        high: np.ndarray, low: np.ndarray, close: np.ndarray,
+        entry_price: float, direction: str = "BUY"
+    ) -> float:
+        """
+        Calculate stop-loss using multiple methods, pick the tightest
+        that still gives breathing room.
+
+        Methods: Chandelier Exit, swing structure, Supertrend.
+        """
+        atr_val = self._atr(high, low, close)[-1]
+        stops = []
+
+        # Method 1: Chandelier Exit (3x ATR from 22-bar extreme)
+        if direction == "BUY":
+            highest_22 = np.max(high[-22:]) if len(high) >= 22 else np.max(high)
+            stops.append(highest_22 - 3.0 * atr_val)
+        else:
+            lowest_22 = np.min(low[-22:]) if len(low) >= 22 else np.min(low)
+            stops.append(lowest_22 + 3.0 * atr_val)
+
+        # Method 2: Swing structure stop
+        swing_lows = self.find_swing_lows(low)
+        swing_highs = self.find_swing_highs(high)
+
+        if direction == "BUY" and swing_lows:
+            recent_lows = [s for s in swing_lows if s < entry_price]
+            if recent_lows:
+                stops.append(max(recent_lows) * 0.995)  # 0.5% buffer
+        elif direction == "SELL" and swing_highs:
+            recent_highs = [s for s in swing_highs if s > entry_price]
+            if recent_highs:
+                stops.append(min(recent_highs) * 1.005)
+
+        # Method 3: Supertrend as stop
+        st_line, st_dir = self.supertrend(high, low, close)
+        stops.append(st_line[-1])
+
+        # Select the tightest valid stop with minimum 1 ATR breathing room
+        if direction == "BUY":
+            valid_stops = [s for s in stops if s < entry_price]
+            if valid_stops:
+                best_stop = max(valid_stops)
+                min_stop = entry_price - 1.0 * atr_val
+                return round(min(best_stop, min_stop), 2)
+            return round(entry_price - 2.0 * atr_val, 2)
+        else:
+            valid_stops = [s for s in stops if s > entry_price]
+            if valid_stops:
+                best_stop = min(valid_stops)
+                min_stop = entry_price + 1.0 * atr_val
+                return round(max(best_stop, min_stop), 2)
+            return round(entry_price + 2.0 * atr_val, 2)
+
+    # =========================================================================
+    # Signal Quality Gate
+    # =========================================================================
+
+    def signal_quality_gate(
+        self,
+        high: np.ndarray, low: np.ndarray,
+        close: np.ndarray, volume: np.ndarray,
+        direction: str, indicators: Dict[str, Dict]
+    ) -> Tuple[bool, float, List[str]]:
+        """
+        Multi-gate signal quality filter.
+        A signal must pass 3+ of 5 gates to be considered valid.
+
+        Gates:
+        1. Trend alignment (price vs 200-SMA)
+        2. Volume confirmation (>= 1.2x average)
+        3. ADX trend strength (> 18)
+        4. Multi-indicator confirmation (3+ of 5 agree)
+        5. No volatility squeeze (BB width not at extreme low)
+
+        Returns: (passes, quality_score, reasons)
+        """
+        gates_passed = 0
+        total_gates = 5
+        reasons = []
+
+        # Gate 1: Trend alignment
+        if len(close) >= 200:
+            sma_200 = self._sma(close, 200)
+            if direction == "BUY" and close[-1] > sma_200[-1]:
+                gates_passed += 1
+                reasons.append("Above 200-SMA")
+            elif direction == "SELL" and close[-1] < sma_200[-1]:
+                gates_passed += 1
+                reasons.append("Below 200-SMA")
+            else:
+                reasons.append("Counter-trend signal")
+        else:
+            # Not enough data for 200-SMA, use 50-SMA
+            sma_50 = self._sma(close, 50)
+            if not np.isnan(sma_50[-1]):
+                if direction == "BUY" and close[-1] > sma_50[-1]:
+                    gates_passed += 1
+                elif direction == "SELL" and close[-1] < sma_50[-1]:
+                    gates_passed += 1
+
+        # Gate 2: Volume confirmation (relaxed to 1.2x for broader inclusion)
+        vol_sma = np.mean(volume[-20:]) if len(volume) >= 20 else np.mean(volume)
+        vol_ratio = volume[-1] / vol_sma if vol_sma > 0 else 0
+        if vol_ratio >= 1.2:
+            gates_passed += 1
+            reasons.append(f"Volume {vol_ratio:.1f}x avg")
+        else:
+            reasons.append(f"Low volume ({vol_ratio:.1f}x)")
+
+        # Gate 3: ADX trend strength
+        adx_vals, _, _ = self.adx(high, low, close)
+        if adx_vals[-1] > 18:
+            gates_passed += 1
+            reasons.append(f"ADX {adx_vals[-1]:.0f}")
+
+        # Gate 4: Multi-indicator confirmation (3+ of available indicators agree)
+        confirming = 0
+        total_checked = 0
+        for name, sig in indicators.items():
+            signal = sig.get('signal', 'NEUTRAL')
+            if direction == "BUY" and signal in ['BUY', 'STRONG_BUY', 'BULLISH', 'OVERSOLD']:
+                confirming += 1
+            elif direction == "SELL" and signal in ['SELL', 'STRONG_SELL', 'BEARISH', 'OVERBOUGHT']:
+                confirming += 1
+            total_checked += 1
+
+        if total_checked > 0 and confirming / total_checked >= 0.375:
+            gates_passed += 1
+            reasons.append(f"{confirming}/{total_checked} indicators confirm")
+
+        # Gate 5: Not in extreme squeeze
+        bb_mid = self._sma(close, 20)
+        bb_std = self._rolling_std(close, 20)
+        if not np.isnan(bb_mid[-1]) and not np.isnan(bb_std[-1]) and bb_mid[-1] > 0:
+            bb_width = (2 * bb_std[-1]) / bb_mid[-1]
+            recent_widths = []
+            for i in range(max(len(close) - 20, 0), len(close)):
+                if not np.isnan(bb_mid[i]) and not np.isnan(bb_std[i]) and bb_mid[i] > 0:
+                    recent_widths.append((2 * bb_std[i]) / bb_mid[i])
+            if recent_widths:
+                width_pctl = sum(1 for w in recent_widths if w < bb_width) / len(recent_widths) * 100
+                if width_pctl > 15:
+                    gates_passed += 1
+                else:
+                    reasons.append("Volatility squeeze")
+            else:
+                gates_passed += 1
+        else:
+            gates_passed += 1  # Can't compute, pass by default
+
+        quality_score = (gates_passed / total_gates) * 100
+        passes = gates_passed >= 3
+
+        return passes, quality_score, reasons
+
+    # =========================================================================
+    # Liquidity Filter
+    # =========================================================================
+
+    def liquidity_check(
+        self,
+        close: np.ndarray,
+        volume: np.ndarray,
+        min_turnover_cr: float = 0.5
+    ) -> Dict[str, Any]:
+        """
+        Check minimum liquidity for reliable signal execution.
+        Daily turnover must meet threshold (in Crores).
+        """
+        avg_vol_20 = np.mean(volume[-20:]) if len(volume) >= 20 else np.mean(volume)
+        avg_price = np.mean(close[-5:]) if len(close) >= 5 else close[-1]
+        daily_turnover = avg_vol_20 * avg_price
+        turnover_cr = daily_turnover / 1e7
+
+        return {
+            'daily_turnover_cr': round(turnover_cr, 2),
+            'passes': turnover_cr >= min_turnover_cr,
+            'avg_volume': int(avg_vol_20),
+        }
+
+    # =========================================================================
     # Helper Functions
     # =========================================================================
 
@@ -1508,15 +2168,29 @@ class AdvancedSignalGenerator:
         self,
         ticker: str,
         ohlcv: pd.DataFrame,
-        hold_days: int = 7
+        hold_days: int = 7,
+        index_close: Optional[np.ndarray] = None
     ) -> Optional[TechnicalSignal]:
         """
-        Analyze a stock using all indicators and generate a combined signal.
+        Analyze a stock using all indicators, quality gates, and
+        structure-based targets.
+
+        Improvements over baseline:
+        - Market regime detection (ADX + BB width)
+        - Volume confirmation requirement
+        - Signal quality gate (multi-gate filter)
+        - Relative strength ranking vs Nifty 50
+        - Momentum quality scoring
+        - Structure-based targets (swing S/R + Fibonacci + ATR confluence)
+        - Chandelier/swing-based stop-loss
+        - Dynamic R:R calculation
+        - Liquidity filter
 
         Args:
             ticker: Stock symbol
             ohlcv: DataFrame with Open, High, Low, Close, Volume
             hold_days: Suggested holding period in days
+            index_close: Optional benchmark index close prices for RS calculation
 
         Returns:
             TechnicalSignal if actionable, None otherwise
@@ -1531,29 +2205,49 @@ class AdvancedSignalGenerator:
         high = df['high'].values
         low = df['low'].values
         close = df['close'].values
+        volume = df['volume'].values if 'volume' in df.columns else np.ones(len(close))
 
         current_price = close[-1]
 
-        # Calculate all indicator signals
+        # ── STEP 0: Liquidity filter ──
+        liquidity = self.indicators.liquidity_check(close, volume, min_turnover_cr=0.3)
+        if not liquidity['passes']:
+            self.logger.debug(f"{ticker}: Failed liquidity filter ({liquidity['daily_turnover_cr']:.1f} Cr)")
+            return None
+
+        # ── STEP 1: Market regime detection ──
+        regime_info = self.indicators.detect_market_regime(high, low, close)
+        regime = regime_info['regime']
+
+        # ── STEP 2: Calculate all indicator signals ──
         signals = {}
         scores = []
+
+        # Category-based scoring to avoid redundancy:
+        # Trend: MACD, Hull, Supertrend, Ichimoku
+        # Momentum: Williams %R, Laguerre, RSI
+        # Volatility: VixFix
+        trend_scores = []
+        momentum_scores = []
 
         try:
             # MACD
             macd_sig = self.indicators.macd_signal(close)
             signals['macd'] = macd_sig
-            if macd_sig['signal'] in ['BUY', 'BULLISH']:
-                scores.append(macd_sig['strength'])
-            elif macd_sig['signal'] in ['SELL', 'BEARISH']:
-                scores.append(-macd_sig['strength'])
+            s = macd_sig['strength'] if macd_sig['signal'] in ['BUY', 'BULLISH'] else \
+                (-macd_sig['strength'] if macd_sig['signal'] in ['SELL', 'BEARISH'] else 0)
+            if s != 0:
+                scores.append(s)
+                trend_scores.append(s)
 
             # Williams %R Exhaustion
             wr_sig = self.indicators.williams_r_exhaustion(high, low, close)
             signals['williams_r'] = wr_sig
-            if wr_sig['signal'] == 'BUY':
-                scores.append(wr_sig['strength'])
-            elif wr_sig['signal'] == 'SELL':
-                scores.append(-wr_sig['strength'])
+            s = wr_sig['strength'] if wr_sig['signal'] == 'BUY' else \
+                (-wr_sig['strength'] if wr_sig['signal'] == 'SELL' else 0)
+            if s != 0:
+                scores.append(s)
+                momentum_scores.append(s)
 
             # VixFix
             vix_sig = self.indicators.williams_vix_fix(close, low)
@@ -1564,135 +2258,235 @@ class AdvancedSignalGenerator:
             # Hull Suite
             hull_sig = self.indicators.hull_suite_signal(close)
             signals['hull_ma'] = hull_sig
-            if hull_sig['signal'] in ['BUY', 'BULLISH']:
-                scores.append(hull_sig['strength'])
-            elif hull_sig['signal'] in ['SELL', 'BEARISH']:
-                scores.append(-hull_sig['strength'])
+            s = hull_sig['strength'] if hull_sig['signal'] in ['BUY', 'BULLISH'] else \
+                (-hull_sig['strength'] if hull_sig['signal'] in ['SELL', 'BEARISH'] else 0)
+            if s != 0:
+                scores.append(s)
+                trend_scores.append(s)
 
             # Laguerre RSI
             lag_sig = self.indicators.laguerre_signal(close)
             signals['laguerre'] = lag_sig
-            if lag_sig['signal'] in ['BUY', 'OVERSOLD']:
-                scores.append(lag_sig['strength'])
-            elif lag_sig['signal'] in ['SELL', 'OVERBOUGHT']:
-                scores.append(-lag_sig['strength'])
+            s = lag_sig['strength'] if lag_sig['signal'] in ['BUY', 'OVERSOLD'] else \
+                (-lag_sig['strength'] if lag_sig['signal'] in ['SELL', 'OVERBOUGHT'] else 0)
+            if s != 0:
+                scores.append(s)
+                momentum_scores.append(s)
 
             # Supertrend
             st_sig = self.indicators.supertrend_signal(high, low, close)
             signals['supertrend'] = st_sig
-            if st_sig['signal'] in ['BUY', 'BULLISH']:
-                scores.append(st_sig['strength'])
-            elif st_sig['signal'] in ['SELL', 'BEARISH']:
-                scores.append(-st_sig['strength'])
+            s = st_sig['strength'] if st_sig['signal'] in ['BUY', 'BULLISH'] else \
+                (-st_sig['strength'] if st_sig['signal'] in ['SELL', 'BEARISH'] else 0)
+            if s != 0:
+                scores.append(s)
+                trend_scores.append(s)
 
             # RSI Divergence
             rsi_sig = self.indicators.rsi_divergence_signal(close)
             signals['rsi'] = rsi_sig
-            if rsi_sig['signal'] in ['BUY', 'OVERSOLD']:
-                scores.append(rsi_sig['strength'])
-            elif rsi_sig['signal'] in ['SELL', 'OVERBOUGHT']:
-                scores.append(-rsi_sig['strength'])
+            s = rsi_sig['strength'] if rsi_sig['signal'] in ['BUY', 'OVERSOLD'] else \
+                (-rsi_sig['strength'] if rsi_sig['signal'] in ['SELL', 'OVERBOUGHT'] else 0)
+            if s != 0:
+                scores.append(s)
+                momentum_scores.append(s)
 
             # Ichimoku
             ichi_sig = self.indicators.ichimoku_signal(high, low, close)
             signals['ichimoku'] = ichi_sig
-            if ichi_sig['signal'] in ['STRONG_BUY', 'BUY', 'BULLISH']:
-                scores.append(ichi_sig['strength'])
-            elif ichi_sig['signal'] in ['STRONG_SELL', 'SELL', 'BEARISH']:
-                scores.append(-ichi_sig['strength'])
+            s = ichi_sig['strength'] if ichi_sig['signal'] in ['STRONG_BUY', 'BUY', 'BULLISH'] else \
+                (-ichi_sig['strength'] if ichi_sig['signal'] in ['STRONG_SELL', 'SELL', 'BEARISH'] else 0)
+            if s != 0:
+                scores.append(s)
+                trend_scores.append(s)
 
         except Exception as e:
             self.logger.warning(f"Error calculating indicators for {ticker}: {e}")
             return None
 
-        # Calculate combined score
         if not scores:
             return None
 
-        avg_score = np.mean(scores)
+        # ── STEP 3: Category-weighted scoring ──
+        # Use median within each category to prevent redundant indicators
+        # from inflating the score, then weight by regime
+        trend_vote = float(np.median(trend_scores)) if trend_scores else 0
+        momentum_vote = float(np.median(momentum_scores)) if momentum_scores else 0
+        raw_avg = float(np.mean(scores))
+
+        # Regime-adaptive weighting
+        if regime == "TRENDING":
+            weighted_score = trend_vote * 0.55 + momentum_vote * 0.25 + raw_avg * 0.20
+        elif regime == "RANGING":
+            weighted_score = momentum_vote * 0.50 + trend_vote * 0.20 + raw_avg * 0.30
+        else:
+            weighted_score = raw_avg * 0.50 + trend_vote * 0.25 + momentum_vote * 0.25
 
         # Determine direction
-        if avg_score >= 40:
+        if weighted_score >= 40:
             direction = SignalDirection.STRONG_BUY
-        elif avg_score >= 20:
+        elif weighted_score >= 18:
             direction = SignalDirection.BUY
-        elif avg_score <= -40:
+        elif weighted_score <= -40:
             direction = SignalDirection.STRONG_SELL
-        elif avg_score <= -20:
+        elif weighted_score <= -18:
             direction = SignalDirection.SELL
         else:
             direction = SignalDirection.NEUTRAL
 
-        # Skip neutral signals
         if direction == SignalDirection.NEUTRAL:
             return None
 
-        # Calculate targets based on ATR
-        atr = self.indicators._atr(high, low, close)[-1]
-        atr_pct = (atr / current_price) * 100
+        dir_str = "BUY" if direction in [SignalDirection.STRONG_BUY, SignalDirection.BUY] else "SELL"
 
-        # Adjust targets based on holding period
-        hold_multiplier = np.sqrt(hold_days / 7)  # Scale with sqrt of time
+        # ── STEP 4: Signal quality gate ──
+        gate_passes, gate_score, gate_reasons = self.indicators.signal_quality_gate(
+            high, low, close, volume, dir_str, signals
+        )
+        if not gate_passes:
+            self.logger.debug(f"{ticker}: Failed quality gate ({gate_score:.0f}%): {gate_reasons}")
+            return None
 
-        # Use more conservative ATR multipliers for realistic targets
-        # Previous: 2/3/4 ATR (too aggressive, led to 30% win rate)
-        # Updated: 1.5/2/2.5 ATR (more achievable in 7-day horizon)
-        if direction in [SignalDirection.STRONG_BUY, SignalDirection.BUY]:
-            entry = current_price
-            stop_loss = current_price - (1.5 * atr)
-            target_1 = current_price + (1.5 * atr * hold_multiplier)
-            target_2 = current_price + (2.0 * atr * hold_multiplier)
-            target_3 = current_price + (2.5 * atr * hold_multiplier)
+        # ── STEP 5: Volume analysis ──
+        vol_analysis = self.indicators.volume_analysis(high, low, close, volume)
+
+        # Penalize signals with OBV divergence
+        if dir_str == "BUY" and vol_analysis['bearish_divergence']:
+            weighted_score *= 0.7  # 30% penalty for volume divergence
+        elif dir_str == "SELL" and vol_analysis['bullish_divergence']:
+            weighted_score *= 0.7
+
+        # ── STEP 6: Momentum quality ──
+        mom_quality = self.indicators.momentum_quality(high, low, close, volume)
+
+        # ── STEP 7: Relative Strength (if benchmark available) ──
+        rs_info = {'mrs': 0, 'outperforming': True, 'mrs_trend': 'UNKNOWN'}
+        if index_close is not None and len(index_close) > 0:
+            rs_info = self.indicators.mansfield_relative_strength(close, index_close)
+            # Penalize buy signals on underperforming stocks
+            if dir_str == "BUY" and not rs_info['outperforming']:
+                weighted_score *= 0.8  # 20% penalty
+            elif dir_str == "SELL" and rs_info['outperforming']:
+                weighted_score *= 0.8
+
+        # Re-check direction after penalties
+        if dir_str == "BUY" and weighted_score < 15:
+            return None
+        if dir_str == "SELL" and weighted_score > -15:
+            return None
+
+        # ── STEP 8: Structure-based targets ──
+        entry = current_price
+        targets = self.indicators.calculate_structure_targets(
+            high, low, close, entry, dir_str, hold_days
+        )
+        target_1 = targets['target_1']
+        target_2 = targets['target_2']
+        target_3 = targets['target_3']
+
+        # ── STEP 9: Structure-based stop-loss ──
+        stop_loss = self.indicators.calculate_structure_stop(
+            high, low, close, entry, dir_str
+        )
+
+        # ── STEP 10: Dynamic R:R calculation ──
+        if dir_str == "BUY":
+            risk = abs(entry - stop_loss)
+            reward = abs(target_2 - entry)
             expected_return = ((target_2 - entry) / entry) * 100
         else:
-            entry = current_price
-            stop_loss = current_price + (1.5 * atr)
-            target_1 = current_price - (1.5 * atr * hold_multiplier)
-            target_2 = current_price - (2.0 * atr * hold_multiplier)
-            target_3 = current_price - (2.5 * atr * hold_multiplier)
+            risk = abs(stop_loss - entry)
+            reward = abs(entry - target_2)
             expected_return = ((entry - target_2) / entry) * 100
 
-        # Risk/Reward
-        risk = abs(entry - stop_loss)
-        reward = abs(target_2 - entry)
         risk_reward = reward / risk if risk > 0 else 0
 
-        # Build reasons and risks
-        reasons = []
-        risks = []
+        # Require minimum R:R of 1.5 for quality signals
+        if risk_reward < 1.3:
+            self.logger.debug(f"{ticker}: R:R too low ({risk_reward:.2f})")
+            return None
 
+        # ── STEP 11: Build reasons and risks ──
+        reasons = []
+        risks_list = []
+
+        # Regime info
+        reasons.append(f"Regime: {regime} (ADX {regime_info['adx']:.0f})")
+
+        # Momentum grade
+        if mom_quality['grade'] in ['A', 'B']:
+            reasons.append(f"Momentum: {mom_quality['grade']}-grade ({mom_quality['momentum_score']})")
+        elif mom_quality['grade'] == 'D':
+            risks_list.append(f"Weak momentum (grade {mom_quality['grade']})")
+
+        # Volume
+        if vol_analysis['volume_confirmed']:
+            reasons.append(f"Volume {vol_analysis['volume_ratio']:.1f}x avg")
+        else:
+            risks_list.append(f"Low volume ({vol_analysis['volume_ratio']:.1f}x)")
+
+        # RS
+        if rs_info.get('mrs', 0) > 0:
+            reasons.append(f"RS+ (MRS {rs_info['mrs']:.1f})")
+        elif rs_info.get('mrs', 0) < -2:
+            risks_list.append(f"Underperforming (MRS {rs_info['mrs']:.1f})")
+
+        # Target confluence
+        if targets.get('confluence_count', 1) >= 3:
+            reasons.append(f"Target confluence ({targets['confluence_count']} methods)")
+
+        # Technical indicator reasons
         if signals['macd']['signal'] in ['BUY', 'BULLISH']:
             reasons.append(f"MACD {signals['macd']['signal'].lower()}")
         elif signals['macd']['signal'] in ['SELL', 'BEARISH']:
-            risks.append(f"MACD {signals['macd']['signal'].lower()}")
+            if dir_str == "SELL":
+                reasons.append(f"MACD {signals['macd']['signal'].lower()}")
+            else:
+                risks_list.append(f"MACD {signals['macd']['signal'].lower()}")
 
         if signals['supertrend']['signal'] in ['BUY', 'BULLISH']:
-            reasons.append(f"Supertrend {signals['supertrend']['direction']}")
+            if dir_str == "BUY":
+                reasons.append(f"Supertrend {signals['supertrend']['direction']}")
+            else:
+                risks_list.append(f"Supertrend {signals['supertrend']['direction']}")
         elif signals['supertrend']['signal'] in ['SELL', 'BEARISH']:
-            risks.append(f"Supertrend {signals['supertrend']['direction']}")
+            if dir_str == "SELL":
+                reasons.append(f"Supertrend {signals['supertrend']['direction']}")
+            else:
+                risks_list.append(f"Supertrend {signals['supertrend']['direction']}")
 
         if signals['ichimoku']['signal'] in ['STRONG_BUY', 'BUY', 'BULLISH']:
-            reasons.append(f"Ichimoku {signals['ichimoku']['position']}")
+            if dir_str == "BUY":
+                reasons.append(f"Ichimoku {signals['ichimoku']['position']}")
         elif signals['ichimoku']['signal'] in ['STRONG_SELL', 'SELL', 'BEARISH']:
-            risks.append(f"Ichimoku {signals['ichimoku']['position']}")
+            if dir_str == "SELL":
+                reasons.append(f"Ichimoku {signals['ichimoku']['position']}")
 
         if signals['rsi']['bullish_divergence']:
             reasons.append("RSI bullish divergence")
         if signals['rsi']['bearish_divergence']:
-            risks.append("RSI bearish divergence")
+            if dir_str == "SELL":
+                reasons.append("RSI bearish divergence")
+            else:
+                risks_list.append("RSI bearish divergence")
 
         if signals['williams_r']['oversold_exhaustion']:
-            reasons.append("Williams %R oversold exhaustion (bottom signal)")
+            reasons.append("Williams %R oversold exhaustion")
         if signals['williams_r']['overbought_exhaustion']:
-            risks.append("Williams %R overbought exhaustion (top signal)")
+            if dir_str == "SELL":
+                reasons.append("Williams %R overbought exhaustion")
+            else:
+                risks_list.append("Williams %R overbought exhaustion")
 
         if signals['vix_fix']['is_bottom_signal']:
             reasons.append("VixFix bottom signal")
 
-        if signals['hull_ma']['hull_rising']:
-            reasons.append("Hull MA rising trend")
-        else:
-            risks.append("Hull MA falling trend")
+        if signals['hull_ma']['hull_rising'] and dir_str == "BUY":
+            reasons.append("Hull MA rising")
+        elif not signals['hull_ma']['hull_rising'] and dir_str == "SELL":
+            reasons.append("Hull MA falling")
+        elif not signals['hull_ma']['hull_rising'] and dir_str == "BUY":
+            risks_list.append("Hull MA falling")
 
         # Get fundamental data if enabled
         fundamental = None
@@ -1702,96 +2496,112 @@ class AdvancedSignalGenerator:
             fundamental = self.fundamental_enhancer.get_fundamental_data(ticker)
 
             if fundamental.has_recent_news:
-                # Add fundamental reasons/risks
-                if fundamental.news_sentiment == 'BULLISH':
-                    reasons.append(f"News sentiment: {fundamental.news_sentiment}")
-                    for catalyst in fundamental.catalysts[:2]:
-                        if catalyst['sentiment'] == 'BULLISH':
-                            reasons.append(f"{catalyst['type'].replace('_', ' ').title()}: {catalyst['headline'][:50]}...")
-                elif fundamental.news_sentiment == 'BEARISH':
-                    risks.append(f"News sentiment: {fundamental.news_sentiment}")
-                    for catalyst in fundamental.catalysts[:2]:
-                        if catalyst['sentiment'] == 'BEARISH':
-                            risks.append(f"{catalyst['type'].replace('_', ' ').title()}: {catalyst['headline'][:50]}...")
-
-                # Add earnings info if available
-                if fundamental.earnings_surprise == 'BEAT':
-                    reasons.append("Recent earnings beat (PEAD opportunity)")
-                elif fundamental.earnings_surprise == 'MISS':
-                    risks.append("Recent earnings miss")
-
-                # Add institutional factors (market-wide sentiment, not stock-specific)
-                # Note: FII/DII flows are for entire market, providing macro context
-                if fundamental.fii_sentiment == 'BULLISH':
-                    reasons.append("Market FII flow: BULLISH (overall foreign buying)")
-                elif fundamental.fii_sentiment == 'BEARISH':
-                    risks.append("Market FII flow: BEARISH (overall foreign selling)")
-
-                if fundamental.dii_sentiment == 'BULLISH':
-                    reasons.append("Market DII flow: BULLISH (overall domestic buying)")
-                elif fundamental.dii_sentiment == 'BEARISH':
-                    risks.append("Market DII flow: BEARISH (overall domestic selling)")
-
-                # Add policy boost factors
-                if fundamental.has_policy_boost and fundamental.relevant_policies:
-                    policy_info = fundamental.relevant_policies[0]
-                    reasons.append(f"Policy boost: {policy_info.get('keyword', 'govt policy')} ({', '.join(fundamental.affected_sectors[:2])})")
-                elif fundamental.policy_score < -10:
-                    risks.append("Negative policy impact")
-
-                # Calculate fundamental score (now includes institutional + policy + quality)
-                # Note: institutional_score is market-wide, so lower weight to avoid overfit
-                fundamental_score = (
-                    fundamental.news_score +
-                    fundamental.pead_score +
-                    fundamental.institutional_score * 0.2 +  # Lower weight (market-wide, not stock-specific)
-                    fundamental.policy_score * 0.2 +  # Lower weight for policy
-                    fundamental.quality_score * 0.3  # Quality metrics weight
+                # Check for fundamental/technical alignment
+                news_aligned = (
+                    (dir_str == "BUY" and fundamental.news_sentiment == 'BULLISH') or
+                    (dir_str == "SELL" and fundamental.news_sentiment == 'BEARISH') or
+                    fundamental.news_sentiment == 'NEUTRAL'
                 )
 
-                # Add quality-related reasons/risks
+                # Add fundamental reasons/risks based on alignment
+                if fundamental.news_sentiment == 'BULLISH':
+                    if dir_str == "BUY":
+                        reasons.append(f"News: BULLISH (aligned)")
+                        for catalyst in fundamental.catalysts[:2]:
+                            if catalyst['sentiment'] == 'BULLISH':
+                                reasons.append(f"{catalyst['type'].replace('_', ' ').title()}: {catalyst['headline'][:50]}...")
+                    else:
+                        risks_list.append(f"Contrary news: BULLISH")
+                elif fundamental.news_sentiment == 'BEARISH':
+                    if dir_str == "SELL":
+                        reasons.append(f"News: BEARISH (aligned)")
+                        for catalyst in fundamental.catalysts[:2]:
+                            if catalyst['sentiment'] == 'BEARISH':
+                                reasons.append(f"{catalyst['type'].replace('_', ' ').title()}: {catalyst['headline'][:50]}...")
+                    else:
+                        risks_list.append(f"Contrary news: BEARISH")
+
+                # Earnings
+                if fundamental.earnings_surprise == 'BEAT':
+                    reasons.append("Recent earnings beat (PEAD)")
+                elif fundamental.earnings_surprise == 'MISS':
+                    risks_list.append("Recent earnings miss")
+
+                # Institutional flow (market-wide context)
+                if fundamental.fii_sentiment == 'BULLISH' and dir_str == "BUY":
+                    reasons.append("FII flow: BULLISH")
+                elif fundamental.fii_sentiment == 'BEARISH' and dir_str == "BUY":
+                    risks_list.append("FII flow: BEARISH")
+
+                # Policy
+                if fundamental.has_policy_boost and fundamental.relevant_policies:
+                    policy_info = fundamental.relevant_policies[0]
+                    reasons.append(f"Policy: {policy_info.get('keyword', 'govt policy')}")
+                elif fundamental.policy_score < -10:
+                    risks_list.append("Negative policy impact")
+
+                # Fundamental score with alignment consideration
+                alignment_mult = 1.0 if news_aligned else 0.5
+                fundamental_score = (
+                    fundamental.news_score * alignment_mult +
+                    fundamental.pead_score +
+                    fundamental.institutional_score * 0.2 +
+                    fundamental.policy_score * 0.2 +
+                    fundamental.quality_score * 0.3
+                )
+
+                # Quality reasons
                 if fundamental.quality_score >= 70:
-                    reasons.append(f"High quality score ({fundamental.quality_score:.0f}/100)")
+                    reasons.append(f"Quality: {fundamental.quality_score:.0f}/100")
                 elif fundamental.quality_score < 40 and fundamental.quality_score > 0:
-                    risks.append(f"Low quality score ({fundamental.quality_score:.0f}/100)")
+                    risks_list.append(f"Low quality ({fundamental.quality_score:.0f}/100)")
                 if not fundamental.passes_quality:
-                    risks.append("⚠ Fails quality checks")
+                    risks_list.append("Fails quality checks")
 
-        # Calculate combined score (70% technical, 30% fundamental)
-        technical_score = min(abs(avg_score), 100)
-        combined_score = (technical_score * 0.7) + (fundamental_score * 0.3)
+        # ── STEP 12: Combined score ──
+        # Technical confidence includes quality gate and momentum
+        tech_confidence = min(abs(weighted_score), 100)
+        gate_bonus = gate_score * 0.1  # Up to 10 points from gate quality
+        mom_bonus = mom_quality['momentum_score'] * 0.1  # Up to 10 from momentum
 
-        # Boost confidence if technical and fundamental align
+        combined_score = (tech_confidence * 0.55) + (fundamental_score * 0.25) + gate_bonus + mom_bonus
+
+        # Alignment boost (only when tech and fundamental agree)
         if fundamental and fundamental.has_recent_news:
-            if (avg_score > 0 and fundamental.news_sentiment == 'BULLISH'):
-                combined_score *= 1.15  # 15% boost for alignment
-            elif (avg_score < 0 and fundamental.news_sentiment == 'BEARISH'):
-                combined_score *= 1.15
+            if (dir_str == "BUY" and fundamental.news_sentiment == 'BULLISH'):
+                combined_score *= 1.12
+            elif (dir_str == "SELL" and fundamental.news_sentiment == 'BEARISH'):
+                combined_score *= 1.12
+            elif (dir_str == "BUY" and fundamental.news_sentiment == 'BEARISH'):
+                combined_score *= 0.85  # Penalize conflicting signals
+            elif (dir_str == "SELL" and fundamental.news_sentiment == 'BULLISH'):
+                combined_score *= 0.85
 
-        # Additional boost for institutional alignment (reduced - FII/DII is market-wide)
-        if fundamental:
-            if avg_score > 0 and fundamental.fii_sentiment == 'BULLISH':
-                combined_score *= 1.02  # 2% boost for FII alignment (market-wide only)
-            if avg_score > 0 and fundamental.has_policy_boost:
-                combined_score *= 1.03  # 3% boost for policy tailwind
+        # Volume confirmation bonus
+        if vol_analysis['volume_confirmed']:
+            combined_score *= 1.05
+
+        # RS bonus
+        if rs_info.get('outperforming', False) and rs_info.get('mrs_trend') == 'RISING':
+            combined_score *= 1.05
 
         return TechnicalSignal(
             ticker=ticker,
             timestamp=str(datetime.now()),
             direction=direction,
-            confidence=min(abs(avg_score), 100),
+            confidence=tech_confidence,
             current_price=current_price,
             entry_price=entry,
             stop_loss=stop_loss,
             target_1=target_1,
             target_2=target_2,
             target_3=target_3,
-            expected_return_pct=expected_return,
-            risk_reward_ratio=risk_reward,
+            expected_return_pct=round(expected_return, 2),
+            risk_reward_ratio=round(risk_reward, 2),
             suggested_hold_days=hold_days,
             indicators=signals,
             reasons=reasons,
-            risks=risks,
+            risks=risks_list,
             fundamental=fundamental,
             combined_score=min(combined_score, 100),
         )
@@ -1805,6 +2615,9 @@ class AdvancedSignalGenerator:
     ) -> List[TechnicalSignal]:
         """
         Scan multiple stocks and return sorted signals.
+
+        Fetches Nifty 50 index data for Mansfield Relative Strength.
+        Applies liquidity filter, quality gates, and minimum R:R.
 
         Args:
             tickers: List of stock tickers to scan
@@ -1820,19 +2633,27 @@ class AdvancedSignalGenerator:
         signals = []
         total = len(tickers)
 
+        # Fetch benchmark index for Relative Strength calculation
+        index_close = None
+        try:
+            index_data = yf.Ticker("^NSEI").history(period="1y")
+            if len(index_data) > 60:
+                index_close = index_data['Close'].values
+        except Exception as e:
+            self.logger.debug(f"Could not fetch Nifty index for RS: {e}")
+
         for i, ticker in enumerate(tickers):
             if progress_callback:
                 progress_callback(i + 1, total, ticker)
 
             try:
-                # Fetch data
                 stock = yf.Ticker(ticker)
                 df = stock.history(period="6mo")
 
                 if len(df) < 60:
                     continue
 
-                signal = self.analyze_stock(ticker, df, hold_days)
+                signal = self.analyze_stock(ticker, df, hold_days, index_close)
 
                 if signal and signal.confidence >= min_confidence:
                     signals.append(signal)
@@ -1841,7 +2662,7 @@ class AdvancedSignalGenerator:
                 self.logger.debug(f"Error scanning {ticker}: {e}")
                 continue
 
-        # Sort by combined score (technical + fundamental) descending
+        # Sort by combined score descending
         if self.use_fundamentals:
             signals.sort(key=lambda s: s.combined_score, reverse=True)
         else:
