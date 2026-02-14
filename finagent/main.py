@@ -1942,11 +1942,13 @@ def scan(
         table = Table(title=f"\nTop {min(count, len(signals))} Opportunities", show_header=True, header_style="bold")
         table.add_column("Ticker", style="cyan", width=14)
         table.add_column("Signal", justify="center", width=12)
-        table.add_column("Tech", justify="right", width=5)
+        table.add_column("Regime", justify="center", width=8)
+        table.add_column("Mom", justify="center", width=4)
+        table.add_column("Vol", justify="center", width=5)
+        table.add_column("RS", justify="center", width=5)
         if fundamentals:
             table.add_column("News", justify="center", width=6)
             table.add_column("FII", justify="center", width=5)
-            table.add_column("Pol", justify="center", width=4)
             table.add_column("Qual", justify="center", width=5)  # Quality score
             table.add_column("Score", justify="right", width=6)
         table.add_column("Price", justify="right", width=10)
@@ -1958,10 +1960,35 @@ def scan(
             dir_color = "green" if signal.direction in [SignalDirection.STRONG_BUY, SignalDirection.BUY] else "red"
             dir_str = signal.direction.value.replace("_", " ")
 
+            # Regime column
+            regime = getattr(signal, 'regime', '')
+            regime_short = {'TRENDING': 'TREND', 'RANGING': 'RANGE', 'LOW_VOLATILITY': 'LOVI',
+                           'HIGH_VOLATILITY': 'HIVI', 'TRANSITIONAL': 'TRANS'}.get(regime, regime[:5])
+            regime_color = "green" if regime == "TRENDING" else ("yellow" if regime == "RANGING" else "dim")
+
+            # Momentum grade column
+            mom_grade = getattr(signal, 'momentum_grade', '')
+            mom_color = "green" if mom_grade in ['A', 'B'] else ("yellow" if mom_grade == 'C' else "red")
+
+            # Volume column
+            vol_ratio = getattr(signal, 'volume_ratio', 0)
+            vol_confirmed = getattr(signal, 'volume_confirmed', False)
+            vol_color = "green" if vol_confirmed else ("yellow" if vol_ratio >= 0.8 else "red")
+            vol_str = f"{vol_ratio:.1f}x"
+
+            # RS column
+            rs_mrs = getattr(signal, 'rs_mrs', 0)
+            rs_out = getattr(signal, 'rs_outperforming', False)
+            rs_color = "green" if rs_out else "red"
+            rs_str = f"{rs_mrs:+.1f}" if rs_mrs != 0 else "--"
+
             row = [
                 signal.ticker.replace(".NS", ""),
                 f"[{dir_color}]{dir_str}[/{dir_color}]",
-                f"{signal.confidence:.0f}%",
+                f"[{regime_color}]{regime_short}[/{regime_color}]",
+                f"[{mom_color}]{mom_grade}[/{mom_color}]",
+                f"[{vol_color}]{vol_str}[/{vol_color}]",
+                f"[{rs_color}]{rs_str}[/{rs_color}]",
             ]
 
             if fundamentals:
@@ -1979,19 +2006,6 @@ def scan(
                     fii_color = "green" if fii == "BULLISH" else ("red" if fii == "BEARISH" else "dim")
                     fii_icon = "↑" if fii == "BULLISH" else ("↓" if fii == "BEARISH" else "-")
                     row.append(f"[{fii_color}]{fii_icon}[/{fii_color}]")
-                else:
-                    row.append("[dim]-[/dim]")
-
-                # Policy boost indicator
-                if signal.fundamental:
-                    has_policy = getattr(signal.fundamental, 'has_policy_boost', False)
-                    policy_score = getattr(signal.fundamental, 'policy_score', 0)
-                    if has_policy:
-                        row.append("[green]✓[/green]")
-                    elif policy_score < -10:
-                        row.append("[red]✗[/red]")
-                    else:
-                        row.append("[dim]-[/dim]")
                 else:
                     row.append("[dim]-[/dim]")
 
@@ -2033,6 +2047,36 @@ def scan(
             dir_color = "green" if top.direction in [SignalDirection.STRONG_BUY, SignalDirection.BUY] else "red"
             console.print(f"  Signal: [{dir_color}]{top.direction.value}[/{dir_color}] ({top.confidence:.0f}% confidence)")
             console.print(f"  Current Price: ₹{top.current_price:,.2f}")
+
+            # Market context summary
+            regime = getattr(top, 'regime', '')
+            mom_grade = getattr(top, 'momentum_grade', '')
+            vol_ratio = getattr(top, 'volume_ratio', 0)
+            rs_mrs = getattr(top, 'rs_mrs', 0)
+            weekly = getattr(top, 'weekly_trend', '')
+            squeeze = getattr(top, 'squeeze_active', False)
+            breakout = getattr(top, 'breakout_detected', False)
+            pa = getattr(top, 'price_action', '')
+
+            console.print(f"\n  [bold]Market Context:[/bold]")
+            regime_color = "green" if regime == "TRENDING" else ("yellow" if regime == "RANGING" else "dim")
+            console.print(f"    Regime: [{regime_color}]{regime}[/{regime_color}] (ADX {getattr(top, 'regime_adx', 0):.0f})")
+            mom_color = "green" if mom_grade in ['A', 'B'] else ("yellow" if mom_grade == 'C' else "red")
+            console.print(f"    Momentum: [{mom_color}]{mom_grade}-grade[/{mom_color}] ({getattr(top, 'momentum_score', 0):.0f})")
+            vol_color = "green" if getattr(top, 'volume_confirmed', False) else "yellow"
+            console.print(f"    Volume: [{vol_color}]{vol_ratio:.1f}x[/{vol_color}] avg")
+            rs_color = "green" if getattr(top, 'rs_outperforming', False) else "red"
+            console.print(f"    Relative Strength: [{rs_color}]MRS {rs_mrs:+.1f}[/{rs_color}]")
+            if weekly:
+                wk_color = "green" if weekly == "UP" else ("red" if weekly == "DOWN" else "yellow")
+                console.print(f"    Weekly Trend: [{wk_color}]{weekly}[/{wk_color}]")
+            if squeeze:
+                console.print(f"    [cyan]TTM Squeeze: Active[/cyan]")
+            if breakout:
+                console.print(f"    [cyan]Breakout: Detected[/cyan]")
+            if pa and pa != 'MIXED':
+                pa_color = "green" if "BULLISH" in pa else ("red" if "BEARISH" in pa else "cyan")
+                console.print(f"    Price Action: [{pa_color}]{pa}[/{pa_color}]")
 
             console.print(f"\n  [bold]Trade Setup:[/bold]")
             console.print(f"    Entry: ₹{top.entry_price:,.2f}")
@@ -2444,6 +2488,48 @@ def analyze_stock(
         console.print(f"[bold]Combined Score:[/bold] {signal.combined_score:.0f}/100")
 
         # ========================================
+        # MARKET CONTEXT
+        # ========================================
+        console.print(f"\n[bold yellow]╔══ MARKET CONTEXT ══╗[/bold yellow]")
+
+        ctx_table = Table(show_header=False, box=None, padding=(0, 2))
+        ctx_table.add_column("Metric", style="bold", width=20)
+        ctx_table.add_column("Value", width=25)
+
+        regime = getattr(signal, 'regime', '')
+        regime_color = "green" if regime == "TRENDING" else ("yellow" if regime == "RANGING" else "dim")
+        ctx_table.add_row("Regime", f"[{regime_color}]{regime}[/{regime_color}] (ADX {getattr(signal, 'regime_adx', 0):.0f})")
+
+        mom_grade = getattr(signal, 'momentum_grade', '')
+        mom_color = "green" if mom_grade in ['A', 'B'] else ("yellow" if mom_grade == 'C' else "red")
+        ctx_table.add_row("Momentum", f"[{mom_color}]{mom_grade}-grade[/{mom_color}] ({getattr(signal, 'momentum_score', 0):.0f}/100)")
+
+        vol_ratio = getattr(signal, 'volume_ratio', 0)
+        vol_color = "green" if getattr(signal, 'volume_confirmed', False) else "yellow"
+        ctx_table.add_row("Volume", f"[{vol_color}]{vol_ratio:.1f}x[/{vol_color}] avg")
+
+        rs_mrs = getattr(signal, 'rs_mrs', 0)
+        rs_color = "green" if getattr(signal, 'rs_outperforming', False) else "red"
+        ctx_table.add_row("Relative Strength", f"[{rs_color}]MRS {rs_mrs:+.1f}[/{rs_color}]")
+
+        weekly = getattr(signal, 'weekly_trend', '')
+        if weekly:
+            wk_color = "green" if weekly == "UP" else ("red" if weekly == "DOWN" else "yellow")
+            ctx_table.add_row("Weekly Trend", f"[{wk_color}]{weekly}[/{wk_color}]")
+
+        if getattr(signal, 'squeeze_active', False):
+            ctx_table.add_row("TTM Squeeze", "[cyan]Active[/cyan]")
+        if getattr(signal, 'breakout_detected', False):
+            ctx_table.add_row("Breakout", "[cyan]Detected[/cyan]")
+
+        pa = getattr(signal, 'price_action', '')
+        if pa and pa != 'MIXED':
+            pa_color = "green" if "BULLISH" in pa else ("red" if "BEARISH" in pa else "cyan")
+            ctx_table.add_row("Price Action", f"[{pa_color}]{pa}[/{pa_color}]")
+
+        console.print(ctx_table)
+
+        # ========================================
         # TRADE SETUP
         # ========================================
         console.print(f"\n[bold magenta]╔══ TRADE SETUP ══╗[/bold magenta]")
@@ -2493,7 +2579,11 @@ def analyze_stock(
             'laguerre': 'Laguerre RSI',
             'supertrend': 'Supertrend',
             'rsi': 'RSI',
-            'ichimoku': 'Ichimoku'
+            'ichimoku': 'Ichimoku',
+            'ttm_squeeze': 'TTM Squeeze',
+            'breakout': 'Breakout',
+            'mean_reversion': 'Mean Reversion',
+            'price_action': 'Price Action',
         }
 
         for ind_key, ind_name in indicator_names.items():

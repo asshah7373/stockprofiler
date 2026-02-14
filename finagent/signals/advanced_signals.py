@@ -139,6 +139,20 @@ class TechnicalSignal:
     # Combined score (technical + fundamental)
     combined_score: float = 0.0
 
+    # Enhanced metadata (regime, momentum, volume, RS, MTA, etc.)
+    regime: str = ""
+    regime_adx: float = 0.0
+    momentum_grade: str = ""
+    momentum_score: float = 0.0
+    volume_ratio: float = 0.0
+    volume_confirmed: bool = False
+    rs_mrs: float = 0.0
+    rs_outperforming: bool = False
+    weekly_trend: str = ""
+    squeeze_active: bool = False
+    breakout_detected: bool = False
+    price_action: str = ""
+
     def to_dict(self) -> Dict:
         result = {
             'ticker': self.ticker,
@@ -160,6 +174,18 @@ class TechnicalSignal:
             'indicators': self.indicators,
             'reasons': self.reasons,
             'risks': self.risks,
+            'regime': self.regime,
+            'regime_adx': self.regime_adx,
+            'momentum_grade': self.momentum_grade,
+            'momentum_score': self.momentum_score,
+            'volume_ratio': self.volume_ratio,
+            'volume_confirmed': self.volume_confirmed,
+            'rs_mrs': self.rs_mrs,
+            'rs_outperforming': self.rs_outperforming,
+            'weekly_trend': self.weekly_trend,
+            'squeeze_active': self.squeeze_active,
+            'breakout_detected': self.breakout_detected,
+            'price_action': self.price_action,
         }
         if self.fundamental:
             result['fundamental'] = self.fundamental.to_dict()
@@ -1470,6 +1496,398 @@ class AdvancedIndicators:
         }
 
     # =========================================================================
+    # Multi-Timeframe Analysis (MTA)
+    # =========================================================================
+
+    def multi_timeframe_analysis(
+        self,
+        high: np.ndarray, low: np.ndarray,
+        close: np.ndarray, volume: np.ndarray
+    ) -> Dict[str, Any]:
+        """
+        Multi-timeframe analysis: resample daily data to weekly bars
+        and check weekly EMA(13) trend direction for confirmation.
+
+        Weekly uptrend = daily buy signals are higher conviction.
+        Weekly downtrend = daily buy signals are suspect.
+        """
+        n = len(close)
+        if n < 30:
+            return {'weekly_trend': 'UNKNOWN', 'aligned': True, 'weekly_ema': 0}
+
+        # Resample daily to weekly (groups of 5 trading days)
+        week_count = n // 5
+        if week_count < 13:
+            return {'weekly_trend': 'UNKNOWN', 'aligned': True, 'weekly_ema': 0}
+
+        weekly_close = np.array([close[min((i + 1) * 5 - 1, n - 1)] for i in range(week_count)])
+        weekly_high = np.array([np.max(high[i * 5:min((i + 1) * 5, n)]) for i in range(week_count)])
+        weekly_low = np.array([np.min(low[i * 5:min((i + 1) * 5, n)]) for i in range(week_count)])
+
+        # Weekly EMA(13) trend
+        weekly_ema13 = self._ema(weekly_close, 13)
+
+        current_weekly_close = weekly_close[-1]
+        current_weekly_ema = weekly_ema13[-1]
+        prev_weekly_ema = weekly_ema13[-2] if len(weekly_ema13) > 1 else current_weekly_ema
+
+        ema_rising = current_weekly_ema > prev_weekly_ema
+        price_above_ema = current_weekly_close > current_weekly_ema
+
+        if ema_rising and price_above_ema:
+            weekly_trend = 'UP'
+        elif not ema_rising and not price_above_ema:
+            weekly_trend = 'DOWN'
+        else:
+            weekly_trend = 'MIXED'
+
+        # Weekly Supertrend for additional confirmation
+        weekly_atr = self._atr(weekly_high, weekly_low, weekly_close, period=min(10, week_count - 1))
+        weekly_st, weekly_st_dir = self.supertrend(weekly_high, weekly_low, weekly_close, period=min(10, week_count - 1))
+        weekly_st_trend = 'UP' if weekly_st_dir[-1] == 1 else 'DOWN'
+
+        return {
+            'weekly_trend': weekly_trend,
+            'weekly_ema': round(current_weekly_ema, 2),
+            'weekly_ema_rising': ema_rising,
+            'price_above_weekly_ema': price_above_ema,
+            'weekly_supertrend': weekly_st_trend,
+            'aligned': weekly_trend == weekly_st_trend,
+        }
+
+    # =========================================================================
+    # TTM Squeeze Detection
+    # =========================================================================
+
+    def ttm_squeeze(
+        self,
+        high: np.ndarray, low: np.ndarray, close: np.ndarray,
+        bb_length: int = 20, bb_mult: float = 2.0,
+        kc_length: int = 20, kc_mult: float = 1.5
+    ) -> Dict[str, Any]:
+        """
+        TTM Squeeze: Bollinger Bands inside Keltner Channels = compression.
+        BB expanding beyond KC = momentum breakout.
+
+        When squeeze fires (BB exits KC), momentum direction predicts breakout.
+        Uses linear regression momentum for direction.
+        """
+        # Bollinger Bands
+        bb_mid = self._sma(close, bb_length)
+        bb_std = self._rolling_std(close, bb_length)
+        bb_upper = bb_mid + bb_mult * bb_std
+        bb_lower = bb_mid - bb_mult * bb_std
+
+        # Keltner Channels
+        kc_mid = self._ema(close, kc_length)
+        atr = self._atr(high, low, close, kc_length)
+        kc_upper = kc_mid + kc_mult * atr
+        kc_lower = kc_mid - kc_mult * atr
+
+        # Squeeze detection: BB inside KC
+        squeeze_on = []
+        for i in range(max(bb_length, kc_length) - 1, len(close)):
+            if not np.isnan(bb_upper[i]) and not np.isnan(kc_upper[i]):
+                squeeze_on.append(bb_lower[i] > kc_lower[i] and bb_upper[i] < kc_upper[i])
+            else:
+                squeeze_on.append(False)
+
+        is_squeezing = squeeze_on[-1] if squeeze_on else False
+
+        # Count consecutive squeeze bars
+        squeeze_bars = 0
+        for sq in reversed(squeeze_on):
+            if sq:
+                squeeze_bars += 1
+            else:
+                break
+
+        # Squeeze just fired (was squeezing, now released)
+        squeeze_fired = False
+        if len(squeeze_on) >= 2:
+            squeeze_fired = squeeze_on[-2] and not squeeze_on[-1]
+
+        # Momentum direction using linear regression slope of close
+        lookback = min(20, len(close))
+        recent = close[-lookback:]
+        x = np.arange(lookback)
+        if len(recent) > 1:
+            slope = np.polyfit(x, recent, 1)[0]
+            momentum_direction = 'UP' if slope > 0 else 'DOWN'
+        else:
+            slope = 0
+            momentum_direction = 'NEUTRAL'
+
+        signal = 'NEUTRAL'
+        strength = 0
+
+        if squeeze_fired:
+            if momentum_direction == 'UP':
+                signal = 'BUY'
+                strength = 85
+            elif momentum_direction == 'DOWN':
+                signal = 'SELL'
+                strength = 85
+        elif is_squeezing and squeeze_bars >= 6:
+            signal = 'BUILDING'
+            strength = 60
+
+        return {
+            'signal': signal,
+            'strength': strength,
+            'is_squeezing': is_squeezing,
+            'squeeze_bars': squeeze_bars,
+            'squeeze_fired': squeeze_fired,
+            'momentum_direction': momentum_direction,
+            'momentum_slope': round(slope, 4),
+        }
+
+    # =========================================================================
+    # Breakout Detection (Darvas Box / Consolidation)
+    # =========================================================================
+
+    def detect_breakout(
+        self,
+        high: np.ndarray, low: np.ndarray,
+        close: np.ndarray, volume: np.ndarray,
+        consolidation_bars: int = 10, range_pct: float = 6.0
+    ) -> Dict[str, Any]:
+        """
+        Detect breakout from consolidation (Darvas Box concept).
+
+        A consolidation is defined as price staying within range_pct%
+        for at least consolidation_bars bars. Breakout occurs when
+        price closes above the range high with volume expansion.
+        """
+        n = len(close)
+        if n < consolidation_bars + 5:
+            return {'breakout': False, 'consolidating': False, 'direction': 'NONE'}
+
+        # Look for consolidation range in recent bars (exclude last bar)
+        lookback_start = max(n - 40, 0)
+        recent_high = high[lookback_start:n - 1]
+        recent_low = low[lookback_start:n - 1]
+
+        # Find the tightest consolidation zone
+        best_range = None
+        best_range_pct_val = float('inf')
+
+        for start in range(len(recent_high) - consolidation_bars):
+            end = start + consolidation_bars
+            zone_high = np.max(recent_high[start:end])
+            zone_low = np.min(recent_low[start:end])
+            zone_range = (zone_high - zone_low) / zone_low * 100 if zone_low > 0 else 999
+
+            if zone_range <= range_pct and zone_range < best_range_pct_val:
+                best_range = (zone_low, zone_high)
+                best_range_pct_val = zone_range
+
+        if best_range is None:
+            return {'breakout': False, 'consolidating': False, 'direction': 'NONE'}
+
+        box_low, box_high = best_range
+        current_close = close[-1]
+        current_vol = volume[-1]
+        avg_vol = np.mean(volume[-20:]) if n >= 20 else np.mean(volume)
+        vol_expansion = current_vol > avg_vol * 1.5
+
+        # Breakout detection
+        breakout_up = current_close > box_high * 1.002 and vol_expansion
+        breakout_down = current_close < box_low * 0.998 and vol_expansion
+        still_consolidating = box_low * 0.998 <= current_close <= box_high * 1.002
+
+        # Measured move target
+        box_range = box_high - box_low
+        if breakout_up:
+            measured_target = box_high + box_range
+        elif breakout_down:
+            measured_target = box_low - box_range
+        else:
+            measured_target = 0
+
+        direction = 'UP' if breakout_up else ('DOWN' if breakout_down else 'NONE')
+
+        return {
+            'breakout': breakout_up or breakout_down,
+            'direction': direction,
+            'consolidating': still_consolidating,
+            'box_high': round(box_high, 2),
+            'box_low': round(box_low, 2),
+            'box_range_pct': round(best_range_pct_val, 1),
+            'volume_expansion': vol_expansion,
+            'measured_target': round(measured_target, 2),
+            'consolidation_bars': consolidation_bars,
+        }
+
+    # =========================================================================
+    # Mean Reversion (for Ranging Markets)
+    # =========================================================================
+
+    def mean_reversion_signal(
+        self,
+        high: np.ndarray, low: np.ndarray,
+        close: np.ndarray, volume: np.ndarray
+    ) -> Dict[str, Any]:
+        """
+        Mean reversion signal for ranging/low-volatility markets.
+
+        Uses BB %B + RSI to find oversold bounces and overbought fades.
+        Only valid when ADX < 25 (no strong trend).
+        Targets are smaller (1-1.5 ATR vs 2.5-3 ATR for trends).
+        """
+        # Check if market is ranging
+        adx_vals, _, _ = self.adx(high, low, close)
+        adx_current = adx_vals[-1] if len(adx_vals) > 0 else 30
+
+        if adx_current > 25:
+            return {'signal': 'NOT_RANGING', 'strength': 0, 'adx': round(adx_current, 1)}
+
+        # Bollinger Band %B
+        bb_mid = self._sma(close, 20)
+        bb_std = self._rolling_std(close, 20)
+        bb_upper = bb_mid + 2 * bb_std
+        bb_lower = bb_mid - 2 * bb_std
+
+        if np.isnan(bb_upper[-1]) or np.isnan(bb_lower[-1]) or bb_upper[-1] == bb_lower[-1]:
+            return {'signal': 'NEUTRAL', 'strength': 0, 'adx': round(adx_current, 1)}
+
+        bb_pctb = (close[-1] - bb_lower[-1]) / (bb_upper[-1] - bb_lower[-1])
+
+        # RSI
+        rsi_vals = self.rsi(close)
+        rsi_current = rsi_vals[-1]
+
+        atr_val = self._atr(high, low, close)[-1]
+
+        signal = 'NEUTRAL'
+        strength = 0
+        target_distance = 0
+        stop_distance = 0
+
+        # Mean reversion buy: near lower BB + RSI oversold
+        if bb_pctb < 0.15 and rsi_current < 35:
+            signal = 'MR_BUY'
+            strength = 75
+            target_distance = round(1.5 * atr_val, 2)  # Smaller target for MR
+            stop_distance = round(1.0 * atr_val, 2)
+        elif bb_pctb < 0.25 and rsi_current < 40:
+            signal = 'MR_BUY'
+            strength = 55
+            target_distance = round(1.0 * atr_val, 2)
+            stop_distance = round(0.8 * atr_val, 2)
+
+        # Mean reversion sell: near upper BB + RSI overbought
+        elif bb_pctb > 0.85 and rsi_current > 65:
+            signal = 'MR_SELL'
+            strength = 75
+            target_distance = round(1.5 * atr_val, 2)
+            stop_distance = round(1.0 * atr_val, 2)
+        elif bb_pctb > 0.75 and rsi_current > 60:
+            signal = 'MR_SELL'
+            strength = 55
+            target_distance = round(1.0 * atr_val, 2)
+            stop_distance = round(0.8 * atr_val, 2)
+
+        return {
+            'signal': signal,
+            'strength': strength,
+            'bb_pctb': round(bb_pctb, 3),
+            'rsi': round(rsi_current, 1),
+            'adx': round(adx_current, 1),
+            'target_distance': target_distance,
+            'stop_distance': stop_distance,
+            'bb_mid': round(bb_mid[-1], 2) if not np.isnan(bb_mid[-1]) else 0,
+        }
+
+    # =========================================================================
+    # Price Action Patterns (HH/HL, LH/LL, Inside Bars)
+    # =========================================================================
+
+    def price_action_patterns(
+        self,
+        high: np.ndarray, low: np.ndarray,
+        close: np.ndarray,
+        lookback: int = 20
+    ) -> Dict[str, Any]:
+        """
+        Detect price action patterns:
+        - Higher Highs / Higher Lows (bullish structure)
+        - Lower Highs / Lower Lows (bearish structure)
+        - Inside bars (compression before breakout)
+        - Swing failure pattern
+        """
+        n = len(close)
+        if n < lookback + 5:
+            return {'pattern': 'UNKNOWN', 'hh_count': 0, 'll_count': 0, 'inside_bars': 0}
+
+        recent_high = high[-lookback:]
+        recent_low = low[-lookback:]
+
+        # Count HH/HL and LH/LL sequences
+        hh_count = 0
+        hl_count = 0
+        lh_count = 0
+        ll_count = 0
+
+        # Use swing points (5-bar pivots)
+        swing_h = []
+        swing_l = []
+        for i in range(2, len(recent_high) - 2):
+            if recent_high[i] >= max(recent_high[i - 2:i]) and recent_high[i] >= max(recent_high[i + 1:i + 3]):
+                swing_h.append(recent_high[i])
+            if recent_low[i] <= min(recent_low[i - 2:i]) and recent_low[i] <= min(recent_low[i + 1:i + 3]):
+                swing_l.append(recent_low[i])
+
+        # Count consecutive HH/LH
+        for i in range(1, len(swing_h)):
+            if swing_h[i] > swing_h[i - 1]:
+                hh_count += 1
+            elif swing_h[i] < swing_h[i - 1]:
+                lh_count += 1
+
+        # Count consecutive HL/LL
+        for i in range(1, len(swing_l)):
+            if swing_l[i] > swing_l[i - 1]:
+                hl_count += 1
+            elif swing_l[i] < swing_l[i - 1]:
+                ll_count += 1
+
+        # Inside bars (current bar's range inside previous bar's range)
+        inside_bars = 0
+        for i in range(n - 5, n):
+            if i > 0 and high[i] <= high[i - 1] and low[i] >= low[i - 1]:
+                inside_bars += 1
+
+        # Determine dominant pattern
+        bullish_score = hh_count + hl_count
+        bearish_score = lh_count + ll_count
+
+        if bullish_score >= 3 and bullish_score > bearish_score * 1.5:
+            pattern = 'BULLISH_STRUCTURE'
+            strength = min(bullish_score * 15, 80)
+        elif bearish_score >= 3 and bearish_score > bullish_score * 1.5:
+            pattern = 'BEARISH_STRUCTURE'
+            strength = min(bearish_score * 15, 80)
+        elif inside_bars >= 2:
+            pattern = 'COMPRESSION'
+            strength = 60
+        else:
+            pattern = 'MIXED'
+            strength = 30
+
+        return {
+            'pattern': pattern,
+            'strength': strength,
+            'hh_count': hh_count,
+            'hl_count': hl_count,
+            'lh_count': lh_count,
+            'll_count': ll_count,
+            'inside_bars': inside_bars,
+            'bullish_score': bullish_score,
+            'bearish_score': bearish_score,
+        }
+
+    # =========================================================================
     # Helper Functions
     # =========================================================================
 
@@ -2369,7 +2787,68 @@ class AdvancedSignalGenerator:
             elif dir_str == "SELL" and rs_info['outperforming']:
                 weighted_score *= 0.8
 
-        # Re-check direction after penalties
+        # ── STEP 7b: Multi-Timeframe Analysis ──
+        mta_info = self.indicators.multi_timeframe_analysis(high, low, close, volume)
+
+        # Penalize signals that fight the weekly trend
+        if dir_str == "BUY" and mta_info['weekly_trend'] == 'DOWN':
+            weighted_score *= 0.8
+        elif dir_str == "SELL" and mta_info['weekly_trend'] == 'UP':
+            weighted_score *= 0.8
+        # Boost signals aligned with weekly trend
+        elif dir_str == "BUY" and mta_info['weekly_trend'] == 'UP' and mta_info.get('aligned', False):
+            weighted_score *= 1.1
+        elif dir_str == "SELL" and mta_info['weekly_trend'] == 'DOWN' and mta_info.get('aligned', False):
+            weighted_score *= 1.1
+
+        # ── STEP 7c: TTM Squeeze ──
+        squeeze_info = self.indicators.ttm_squeeze(high, low, close)
+        signals['ttm_squeeze'] = squeeze_info
+
+        # Squeeze firing adds conviction
+        if squeeze_info['squeeze_fired']:
+            if squeeze_info['momentum_direction'] == 'UP' and dir_str == "BUY":
+                weighted_score *= 1.15
+            elif squeeze_info['momentum_direction'] == 'DOWN' and dir_str == "SELL":
+                weighted_score *= 1.15
+
+        # ── STEP 7d: Breakout Detection ──
+        breakout_info = self.indicators.detect_breakout(high, low, close, volume)
+        signals['breakout'] = breakout_info
+
+        # Breakout adds conviction and can override targets
+        if breakout_info['breakout']:
+            if breakout_info['direction'] == 'UP' and dir_str == "BUY":
+                weighted_score *= 1.2
+            elif breakout_info['direction'] == 'DOWN' and dir_str == "SELL":
+                weighted_score *= 1.2
+
+        # ── STEP 7e: Mean Reversion (for ranging markets) ──
+        mr_info = self.indicators.mean_reversion_signal(high, low, close, volume)
+        signals['mean_reversion'] = mr_info
+
+        # If ranging market, mean reversion signals can supplement
+        if regime in ['RANGING', 'LOW_VOLATILITY']:
+            if mr_info['signal'] == 'MR_BUY' and dir_str == "BUY":
+                weighted_score *= 1.1
+            elif mr_info['signal'] == 'MR_SELL' and dir_str == "SELL":
+                weighted_score *= 1.1
+
+        # ── STEP 7f: Price Action Patterns ──
+        pa_info = self.indicators.price_action_patterns(high, low, close)
+        signals['price_action'] = pa_info
+
+        # Structural confirmation
+        if pa_info['pattern'] == 'BULLISH_STRUCTURE' and dir_str == "BUY":
+            weighted_score *= 1.05
+        elif pa_info['pattern'] == 'BEARISH_STRUCTURE' and dir_str == "SELL":
+            weighted_score *= 1.05
+        elif pa_info['pattern'] == 'BULLISH_STRUCTURE' and dir_str == "SELL":
+            weighted_score *= 0.85  # Fighting the structure
+        elif pa_info['pattern'] == 'BEARISH_STRUCTURE' and dir_str == "BUY":
+            weighted_score *= 0.85
+
+        # Re-check direction after all penalties/boosts
         if dir_str == "BUY" and weighted_score < 15:
             return None
         if dir_str == "SELL" and weighted_score > -15:
@@ -2384,10 +2863,36 @@ class AdvancedSignalGenerator:
         target_2 = targets['target_2']
         target_3 = targets['target_3']
 
+        # Override target with breakout measured move if applicable
+        if breakout_info['breakout'] and breakout_info['measured_target'] > 0:
+            measured = breakout_info['measured_target']
+            if dir_str == "BUY" and measured > target_2:
+                target_2 = measured
+            elif dir_str == "SELL" and measured < target_2:
+                target_2 = measured
+
+        # For mean reversion in ranging markets, use tighter targets
+        if regime in ['RANGING', 'LOW_VOLATILITY'] and mr_info['signal'] in ['MR_BUY', 'MR_SELL']:
+            bb_mid_val = mr_info.get('bb_mid', 0)
+            if bb_mid_val > 0:
+                if dir_str == "BUY":
+                    target_1 = min(target_1, bb_mid_val)  # Target the mean
+                else:
+                    target_1 = max(target_1, bb_mid_val)
+
         # ── STEP 9: Structure-based stop-loss ──
         stop_loss = self.indicators.calculate_structure_stop(
             high, low, close, entry, dir_str
         )
+
+        # For breakouts, use box boundary as stop
+        if breakout_info['breakout']:
+            if dir_str == "BUY" and breakout_info['box_low'] > 0:
+                box_stop = breakout_info['box_low'] * 0.995
+                stop_loss = max(stop_loss, box_stop)  # Tighter stop
+            elif dir_str == "SELL" and breakout_info['box_high'] > 0:
+                box_stop = breakout_info['box_high'] * 1.005
+                stop_loss = min(stop_loss, box_stop)
 
         # ── STEP 10: Dynamic R:R calculation ──
         if dir_str == "BUY":
@@ -2401,7 +2906,7 @@ class AdvancedSignalGenerator:
 
         risk_reward = reward / risk if risk > 0 else 0
 
-        # Require minimum R:R of 1.5 for quality signals
+        # Require minimum R:R of 1.3 for quality signals
         if risk_reward < 1.3:
             self.logger.debug(f"{ticker}: R:R too low ({risk_reward:.2f})")
             return None
@@ -2412,6 +2917,16 @@ class AdvancedSignalGenerator:
 
         # Regime info
         reasons.append(f"Regime: {regime} (ADX {regime_info['adx']:.0f})")
+
+        # Multi-timeframe confirmation
+        if mta_info['weekly_trend'] != 'UNKNOWN':
+            if (dir_str == "BUY" and mta_info['weekly_trend'] == 'UP') or \
+               (dir_str == "SELL" and mta_info['weekly_trend'] == 'DOWN'):
+                reasons.append(f"Weekly trend: {mta_info['weekly_trend']} (confirmed)")
+            elif mta_info['weekly_trend'] == 'MIXED':
+                risks_list.append("Weekly trend: MIXED")
+            else:
+                risks_list.append(f"Counter weekly trend ({mta_info['weekly_trend']})")
 
         # Momentum grade
         if mom_quality['grade'] in ['A', 'B']:
@@ -2430,6 +2945,34 @@ class AdvancedSignalGenerator:
             reasons.append(f"RS+ (MRS {rs_info['mrs']:.1f})")
         elif rs_info.get('mrs', 0) < -2:
             risks_list.append(f"Underperforming (MRS {rs_info['mrs']:.1f})")
+
+        # TTM Squeeze
+        if squeeze_info['squeeze_fired']:
+            reasons.append(f"Squeeze fired ({squeeze_info['momentum_direction']})")
+        elif squeeze_info['is_squeezing'] and squeeze_info['squeeze_bars'] >= 6:
+            reasons.append(f"Squeeze building ({squeeze_info['squeeze_bars']} bars)")
+
+        # Breakout
+        if breakout_info['breakout']:
+            reasons.append(f"Breakout {breakout_info['direction']} (range {breakout_info['box_range_pct']:.1f}%)")
+        elif breakout_info['consolidating']:
+            reasons.append(f"Consolidating ({breakout_info['box_range_pct']:.1f}% range)")
+
+        # Mean reversion
+        if mr_info['signal'] in ['MR_BUY', 'MR_SELL']:
+            reasons.append(f"Mean reversion ({mr_info['signal']}, BB%B={mr_info['bb_pctb']:.2f})")
+
+        # Price action structure
+        if pa_info['pattern'] == 'BULLISH_STRUCTURE' and dir_str == "BUY":
+            reasons.append(f"Bullish structure (HH:{pa_info['hh_count']} HL:{pa_info['hl_count']})")
+        elif pa_info['pattern'] == 'BEARISH_STRUCTURE' and dir_str == "SELL":
+            reasons.append(f"Bearish structure (LH:{pa_info['lh_count']} LL:{pa_info['ll_count']})")
+        elif pa_info['pattern'] == 'COMPRESSION':
+            reasons.append(f"Price compression ({pa_info['inside_bars']} inside bars)")
+        elif pa_info['pattern'] == 'BULLISH_STRUCTURE' and dir_str == "SELL":
+            risks_list.append("Counter bullish price structure")
+        elif pa_info['pattern'] == 'BEARISH_STRUCTURE' and dir_str == "BUY":
+            risks_list.append("Counter bearish price structure")
 
         # Target confluence
         if targets.get('confluence_count', 1) >= 3:
@@ -2585,6 +3128,22 @@ class AdvancedSignalGenerator:
         if rs_info.get('outperforming', False) and rs_info.get('mrs_trend') == 'RISING':
             combined_score *= 1.05
 
+        # MTA alignment bonus
+        if (dir_str == "BUY" and mta_info['weekly_trend'] == 'UP') or \
+           (dir_str == "SELL" and mta_info['weekly_trend'] == 'DOWN'):
+            combined_score *= 1.05
+
+        # Squeeze/breakout bonus
+        if squeeze_info['squeeze_fired']:
+            combined_score *= 1.08
+        if breakout_info['breakout']:
+            combined_score *= 1.10
+
+        # Price action structure alignment bonus
+        if (pa_info['pattern'] == 'BULLISH_STRUCTURE' and dir_str == "BUY") or \
+           (pa_info['pattern'] == 'BEARISH_STRUCTURE' and dir_str == "SELL"):
+            combined_score *= 1.05
+
         return TechnicalSignal(
             ticker=ticker,
             timestamp=str(datetime.now()),
@@ -2604,6 +3163,18 @@ class AdvancedSignalGenerator:
             risks=risks_list,
             fundamental=fundamental,
             combined_score=min(combined_score, 100),
+            regime=regime,
+            regime_adx=regime_info['adx'],
+            momentum_grade=mom_quality['grade'],
+            momentum_score=mom_quality['momentum_score'],
+            volume_ratio=vol_analysis['volume_ratio'],
+            volume_confirmed=vol_analysis['volume_confirmed'],
+            rs_mrs=rs_info.get('mrs', 0),
+            rs_outperforming=rs_info.get('outperforming', False),
+            weekly_trend=mta_info.get('weekly_trend', ''),
+            squeeze_active=squeeze_info.get('is_squeezing', False) or squeeze_info.get('squeeze_fired', False),
+            breakout_detected=breakout_info.get('breakout', False),
+            price_action=pa_info.get('pattern', ''),
         )
 
     def scan_stocks(

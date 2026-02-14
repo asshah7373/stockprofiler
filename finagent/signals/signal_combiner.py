@@ -407,37 +407,59 @@ class SignalCombiner:
         action: str,
         time_horizon: TimeHorizon
     ) -> Tuple[Optional[float], Optional[float], Optional[float]]:
-        """Calculate target price, stop loss, and expected return."""
+        """
+        Calculate target price, stop loss, and expected return.
+
+        Uses ATR-based scaling per time horizon with confidence adjustment.
+        If technical signal details include structure-based targets from
+        the advanced signal generator, those are preferred.
+        """
         if not current_price or current_price <= 0:
             return None, None, None
 
-        # Expected move based on time horizon
-        horizon_expected_moves = {
-            TimeHorizon.INTRADAY: (0.02, 0.01),   # 2% target, 1% stop
-            TimeHorizon.SHORT: (0.05, 0.02),      # 5% target, 2% stop
-            TimeHorizon.WEEKLY: (0.08, 0.03),     # 8% target, 3% stop
-            TimeHorizon.MONTHLY: (0.12, 0.05),    # 12% target, 5% stop
-            TimeHorizon.QUARTERLY: (0.20, 0.08),  # 20% target, 8% stop
-            TimeHorizon.LONG: (0.30, 0.12),       # 30% target, 12% stop
+        # Check if any technical signal carries structure-based targets
+        for sig in signals:
+            if sig.signal_type == SignalType.TECHNICAL and sig.details:
+                if 'target_price' in sig.details and 'stop_loss' in sig.details:
+                    return (
+                        sig.details['target_price'],
+                        sig.details['stop_loss'],
+                        sig.details.get('expected_return', 0),
+                    )
+
+        # ATR-scaled expected move per time horizon (target_mult, stop_mult of daily range)
+        # These represent realistic multiples of typical daily ATR for each horizon
+        horizon_atr_mults = {
+            TimeHorizon.INTRADAY: (1.0, 0.5),    # 1 ATR target, 0.5 ATR stop
+            TimeHorizon.SHORT: (2.0, 1.0),        # 2 ATR target, 1 ATR stop
+            TimeHorizon.WEEKLY: (3.0, 1.5),       # 3 ATR target, 1.5 ATR stop
+            TimeHorizon.MONTHLY: (4.5, 2.0),      # 4.5 ATR target, 2 ATR stop
+            TimeHorizon.QUARTERLY: (7.0, 3.0),    # 7 ATR target, 3 ATR stop
+            TimeHorizon.LONG: (10.0, 4.0),        # 10 ATR target, 4 ATR stop
         }
 
-        target_pct, stop_pct = horizon_expected_moves.get(
-            time_horizon,
-            (0.10, 0.05)
-        )
+        target_mult, stop_mult = horizon_atr_mults.get(time_horizon, (3.0, 1.5))
 
-        # Adjust based on confidence from signals
+        # Estimate ATR from recent price action (approx 1.5% daily for Indian equities)
+        # This is a fallback when OHLCV data isn't available here
+        estimated_atr = current_price * 0.015
+
+        # Adjust target based on signal confidence and agreement
         avg_confidence = sum(s.confidence for s in signals) / len(signals) if signals else 0.5
-        target_pct *= avg_confidence
+        agreement = self._calculate_agreement(signals)
+        adj_factor = avg_confidence * (0.7 + 0.3 * agreement)  # 70-100% of base target
+
+        target_distance = estimated_atr * target_mult * adj_factor
+        stop_distance = estimated_atr * stop_mult
 
         if action in ['BUY', 'STRONG_BUY']:
-            target_price = current_price * (1 + target_pct)
-            stop_loss = current_price * (1 - stop_pct)
-            expected_return = target_pct * 100
+            target_price = current_price + target_distance
+            stop_loss = current_price - stop_distance
+            expected_return = (target_distance / current_price) * 100
         elif action in ['SELL', 'STRONG_SELL']:
-            target_price = current_price * (1 - target_pct)
-            stop_loss = current_price * (1 + stop_pct)
-            expected_return = target_pct * 100  # For short position
+            target_price = current_price - target_distance
+            stop_loss = current_price + stop_distance
+            expected_return = (target_distance / current_price) * 100
         else:
             return None, None, None
 
