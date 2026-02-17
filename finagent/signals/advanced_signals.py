@@ -868,8 +868,9 @@ class AdvancedIndicators:
         smooth_plus_dm = self._ema(plus_dm, period)
         smooth_minus_dm = self._ema(minus_dm, period)
 
-        plus_di = np.where(atr > 0, (smooth_plus_dm / atr) * 100, 0)
-        minus_di = np.where(atr > 0, (smooth_minus_dm / atr) * 100, 0)
+        safe_atr = np.maximum(atr, 1e-10)
+        plus_di = np.where(atr > 0, (smooth_plus_dm / safe_atr) * 100, 0)
+        minus_di = np.where(atr > 0, (smooth_minus_dm / safe_atr) * 100, 0)
 
         di_sum = plus_di + minus_di
         dx = np.where(
